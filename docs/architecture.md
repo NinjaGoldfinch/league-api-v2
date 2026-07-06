@@ -4,15 +4,21 @@ This project is structured as a small FastAPI backend that can grow into Riot AP
 
 ## API Layer
 
-The `league_api.api` package owns HTTP routes. It currently exposes only `GET /health`, with future public and operational endpoints expected to live under route modules.
+The `league_api.api` package owns HTTP routes. It exposes `GET /health` and `GET /ingestion/ladder-page` for the first Riot ingestion path. `QUERY /ingestion/ladder-page` is also supported for clients that need to send the ladder request inputs as JSON body content.
 
 ## Riot Client Layer
 
-The `league_api.riot` package will own Riot API routing and HTTP client behavior. Platform routes are used for League-V4 ladder endpoints, while regional routes are used for Match-V5 endpoints. For OCE, ladder data uses the `oc1` platform route and Match-V5 uses the `sea` regional route.
+The `league_api.riot` package owns Riot API routing, minimal response schemas, error types, and HTTP client behavior. Platform routes are used for League-V4 ladder endpoints. For OCE, ladder data uses the `oc1` platform route.
 
 ## Ingestion Services
 
-The `league_api.ingestion` package is reserved for orchestration code that will collect ladder pages, discover player match IDs, and fetch match details. The first planned ingestion path is OCE Challenger ranked ladder data.
+The `league_api.ingestion` package owns orchestration code that collects ladder entries. The first ingestion path is:
+
+```text
+Ladder endpoint -> players -> PUUIDs
+```
+
+This stage deliberately does not use Account-V1, Summoner-V4, or Match-V5. League-V4 ladder entries provide PUUIDs directly. Challenger, Grandmaster, and Master use Riot's apex ladder endpoints, while lower tiers use the division/page entries endpoint.
 
 ## Database and Repository Layer
 
@@ -24,4 +30,4 @@ Future ingestion work may need background workers for scheduled ladder refreshes
 
 ## Match Deduplication
 
-Ladder ingestion should deduplicate matches by `match_id`. Multiple Challenger players can appear in the same game, so match history discovery will naturally find repeated match IDs. Deduplicating before fetching and storing Match-V5 details avoids redundant Riot calls, reduces rate-limit pressure, and keeps database writes idempotent.
+A later Match-V5 stage should deduplicate matches by `match_id`. Multiple ranked players can appear in the same game, so match history discovery will naturally find repeated match IDs. That later stage should check persisted match IDs before fetching details and should store fetched match payloads outside the API response.
