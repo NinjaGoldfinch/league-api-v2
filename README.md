@@ -1,7 +1,9 @@
 # League API
 
-League API is a Python 3.12+ FastAPI backend for League of Legends game data.
-The first working ingestion path pulls an OCE ranked ladder page and returns the League-V4 entries with a small summary.
+League API is a Python 3.12+ FastAPI backend that currently mirrors Riot
+Match-V5 and League-V4 GET endpoints. It keeps the local URL paths aligned with
+Riot's documented paths and adds a small routing query parameter for choosing
+the Riot upstream region or platform.
 
 ## License
 
@@ -39,32 +41,57 @@ RIOT_API_KEY=your-development-key
 uvicorn league_api.main:app --reload
 ```
 
-The health endpoint is available at `GET /health`.
+OpenAPI documentation is available at `GET /docs` and `GET /openapi.json`.
 
-## First Ingestion Flow
+## Match-V5
 
-```text
-Ladder endpoint -> players -> PUUIDs
-```
+Match-V5 endpoints use regional routing. Set `regional_route` to `AMERICAS`,
+`ASIA`, `EUROPE`, or `SEA`; it defaults to `sea`.
 
-Run an OCE Challenger Solo Queue ladder fetch:
-
-```bash
-curl "http://localhost:8000/ingestion/ladder-page?platform_route=oc1&queue=RANKED_SOLO_5x5&tier=CHALLENGER"
-```
-
-The same route also accepts the HTTP `QUERY` method when a client needs to send
-query inputs in a JSON body instead of the URL:
+Fetch match IDs for a player:
 
 ```bash
-curl -X QUERY "http://localhost:8000/ingestion/ladder-page" \
-  -H "Content-Type: application/json" \
-  -d '{"platform_route":"oc1","queue":"RANKED_SOLO_5x5","tier":"DIAMOND","division":"I","page":1}'
+curl "http://localhost:8000/lol/match/v5/matches/by-puuid/PLAYER_PUUID/ids?regional_route=sea&start=0&count=20"
 ```
 
-Challenger, Grandmaster, and Master use Riot's apex League-V4 endpoints, which do not take a division or page. Lower tiers use the entries endpoint with `division` and optional `page`.
+The match ID endpoint supports Riot's full query flag set:
+`startTime`, `endTime`, `queue`, `type`, `start`, and `count`.
 
-This stage does not persist data to PostgreSQL yet and does not fetch Match-V5 history or match details.
+```bash
+curl "http://localhost:8000/lol/match/v5/matches/by-puuid/PLAYER_PUUID/ids?regional_route=sea&startTime=1710000000&endTime=1710003600&queue=420&type=ranked&start=0&count=100"
+```
+
+Fetch match detail, timeline, or replays:
+
+```bash
+curl "http://localhost:8000/lol/match/v5/matches/OC1_123456789?regional_route=sea"
+curl "http://localhost:8000/lol/match/v5/matches/OC1_123456789/timeline?regional_route=sea"
+curl "http://localhost:8000/lol/match/v5/matches/by-puuid/PLAYER_PUUID/replays?regional_route=sea"
+```
+
+## League-V4
+
+League-V4 endpoints use platform routing. Set `platform_route` to a Riot
+platform such as `OC1`, `NA1`, `EUW1`, `KR`, `SG2`, `TW2`, or `VN2`; it defaults
+to `oc1`.
+
+Fetch apex leagues:
+
+```bash
+curl "http://localhost:8000/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5?platform_route=oc1"
+curl "http://localhost:8000/lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5?platform_route=oc1"
+curl "http://localhost:8000/lol/league/v4/masterleagues/by-queue/RANKED_SOLO_5x5?platform_route=oc1"
+```
+
+Fetch entries by PUUID or ranked page:
+
+```bash
+curl "http://localhost:8000/lol/league/v4/entries/by-puuid/PLAYER_PUUID?platform_route=oc1"
+curl "http://localhost:8000/lol/league/v4/entries/RANKED_SOLO_5x5/DIAMOND/I?platform_route=oc1&page=1"
+```
+
+Only `GET` is supported for mirrored Riot routes. There are no request bodies or
+custom `QUERY` method aliases.
 
 ## Test
 

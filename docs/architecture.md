@@ -1,24 +1,43 @@
 # Architecture
 
-This project is structured as a small FastAPI backend that can grow into Riot API ingestion without mixing concerns too early.
+This project is structured as a small FastAPI backend that mirrors selected Riot
+API surfaces without mixing proxy behavior, persistence, and ingestion concerns
+too early.
 
 ## API Layer
 
-The `league_api.api` package owns HTTP routes. It exposes `GET /health` and `GET /ingestion/ladder-page` for the first Riot ingestion path. `QUERY /ingestion/ladder-page` is also supported for clients that need to send the ladder request inputs as JSON body content.
+The `league_api.api` package owns HTTP routes. It currently exposes GET-only
+mirrors for Riot Match-V5 and League-V4:
+
+```text
+/lol/match/v5/matches/by-puuid/{puuid}/ids
+/lol/match/v5/matches/by-puuid/{puuid}/replays
+/lol/match/v5/matches/{matchId}
+/lol/match/v5/matches/{matchId}/timeline
+/lol/league/v4/challengerleagues/by-queue/{queue}
+/lol/league/v4/entries/by-puuid/{encryptedPUUID}
+/lol/league/v4/entries/{queue}/{tier}/{division}
+/lol/league/v4/grandmasterleagues/by-queue/{queue}
+/lol/league/v4/masterleagues/by-queue/{queue}
+```
+
+Match-V5 routes accept `regional_route` to choose the Riot regional host.
+League-V4 routes accept `platform_route` to choose the Riot platform host.
+Those routing parameters are local proxy configuration; Riot's documented path
+and query parameters are otherwise passed through as-is.
 
 ## Riot Client Layer
 
-The `league_api.riot` package owns Riot API routing, minimal response schemas, error types, and HTTP client behavior. Platform routes are used for League-V4 ladder endpoints. For OCE, ladder data uses the `oc1` platform route.
+The `league_api.riot` package owns Riot API routing, error types, and HTTP
+client behavior. Platform routes are used for League-V4. Regional routes are
+used for Match-V5. The client returns Riot JSON payloads directly so response
+shape stays aligned with Riot's own DTOs.
 
 ## Ingestion Services
 
-The `league_api.ingestion` package owns orchestration code that collects ladder entries. The first ingestion path is:
-
-```text
-Ladder endpoint -> players -> PUUIDs
-```
-
-This stage deliberately does not use Account-V1, Summoner-V4, or Match-V5. League-V4 ladder entries provide PUUIDs directly. Challenger, Grandmaster, and Master use Riot's apex ladder endpoints, while lower tiers use the division/page entries endpoint.
+Ingestion orchestration is intentionally not exposed through the API right now.
+Future ingestion services should build on the Riot client instead of embedding
+Riot HTTP behavior directly in route handlers.
 
 ## Database and Repository Layer
 
@@ -26,8 +45,13 @@ The `league_api.db` package contains async SQLAlchemy session setup. Future data
 
 ## Background Worker Layer
 
-Future ingestion work may need background workers for scheduled ladder refreshes, match history discovery, and match detail fetching. That layer should call ingestion services rather than embedding Riot or database logic directly in worker entry points.
+There is no public background worker API in the current mirror stage. Future
+scheduled ladder refreshes, match history discovery, and match detail fetching
+should reuse the Riot client and keep queue concerns outside the HTTP mirror
+routes.
 
 ## Match Deduplication
 
-A later Match-V5 stage should deduplicate matches by `match_id`. Multiple ranked players can appear in the same game, so match history discovery will naturally find repeated match IDs. That later stage should check persisted match IDs before fetching details and should store fetched match payloads outside the API response.
+The mirror routes do not deduplicate or persist data. Later persisted ingestion
+stages should deduplicate by `match_id`, check stored match IDs before fetching
+details, and store fetched match payloads outside the API response.

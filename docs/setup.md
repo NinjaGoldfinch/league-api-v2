@@ -36,7 +36,8 @@ Copy the example file:
 cp .env.example .env
 ```
 
-`RIOT_API_KEY` may be left empty for now because Riot ingestion is not implemented yet.
+`RIOT_API_KEY` is required for mirrored Riot Match-V5 and League-V4 calls. It
+may be left empty when running local tests that override the Riot client.
 
 ## Run the API Locally
 
@@ -47,7 +48,7 @@ uvicorn league_api.main:app --reload
 Then check:
 
 ```bash
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/openapi.json
 ```
 
 ## Run Tests
