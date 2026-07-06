@@ -94,10 +94,36 @@ curl "http://localhost:8000/jobs/JOB_ID"
 curl "http://localhost:8000/jobs/JOB_ID/result"
 ```
 
+List active jobs or expand to all retained job details:
+
+```bash
+curl "http://localhost:8000/jobs/status"
+curl "http://localhost:8000/jobs/status?running_only=false&verbose=true&include_events=true&include_result=true"
+```
+
+Job responses include a `details` object with the Riot source, queue, tier,
+division, route, match count, player count, and request-count context. They also
+include an `estimate` object with the current fetching stage, completed and
+remaining Riot request counts, and `estimated_completed_at` when there is enough
+progress to project a rough finish time. The estimate uses the slower of
+observed request pace and the configured Riot app rate limit, plus any active
+rate-limit wait.
+
+When the Riot client is waiting on rate limits, job responses include
+`current_wait.resume_at` plus recent `events` entries for request start,
+success, failure, and rate-limit waits.
+Set `RIOT_REQUEST_LOGS_ENABLED=false` to turn off the matching console logs.
+
 Run all live endpoint smoke scripts:
 
 ```bash
 make test-endpoints
+```
+
+Include the live endpoint scripts at the end of `make check`:
+
+```bash
+RUN_LIVE_ENDPOINTS=1 make check
 ```
 
 The overall runner calls separate scripts for Riot mirror endpoints and job
@@ -137,8 +163,9 @@ Do not commit `.env` or real Riot API keys. Use `.env.example` for documented de
 ## Current Scope
 
 Keep ingestion in this stage limited to the generic `/jobs/ingestion/ladder`
-start endpoint and the `/jobs/{job_id}` status/result endpoints. The current
-job supports OCE Challenger only: it fetches the ladder, requests 20 recent
-Match-V5 match IDs per PUUID, deduplicates IDs, and fetches each unique match
-detail once. Grandmaster, Master, ranked-page ingestion, persistence, retries,
-rate-limit scheduling, and external workers are future stages.
+start endpoint, `/jobs/status`, and the `/jobs/{job_id}` status/result
+endpoints. The current job supports OCE Challenger only: it fetches the ladder,
+requests 20 recent Match-V5 match IDs per PUUID, deduplicates IDs, and fetches
+each unique match detail once. Grandmaster, Master, ranked-page ingestion,
+persistence, retries, rate-limit scheduling, and external workers are future
+stages.

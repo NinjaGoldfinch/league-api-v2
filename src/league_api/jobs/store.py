@@ -4,10 +4,12 @@ from uuid import uuid4
 
 from league_api.jobs.models import (
     JobError,
+    JobEvent,
     JobProgress,
     JobRecord,
     JobStatus,
     JobType,
+    JobWait,
     LadderIngestionParams,
     LadderIngestionResult,
 )
@@ -45,6 +47,14 @@ class InMemoryJobStore:
                 return None
             return self._copy(job)
 
+    async def list_jobs(self, *, statuses: set[JobStatus] | None = None) -> list[JobRecord]:
+        async with self._lock:
+            jobs = list(self._jobs.values())
+            if statuses is not None:
+                jobs = [job for job in jobs if job.status in statuses]
+            jobs.sort(key=lambda job: job.created_at, reverse=True)
+            return [self._copy(job) for job in jobs]
+
     async def mark_running(self, job_id: str) -> JobRecord:
         async with self._lock:
             job = self._require_job(job_id)
@@ -72,6 +82,7 @@ class InMemoryJobStore:
             job.progress = result.summary.model_copy(deep=True)
             job.result = result.model_copy(deep=True)
             job.error = None
+            job.current_wait = None
             return self._copy(job)
 
     async def mark_failed(self, job_id: str, *, error: JobError) -> JobRecord:
@@ -80,6 +91,27 @@ class InMemoryJobStore:
             job.status = JobStatus.FAILED
             job.finished_at = datetime.now(UTC)
             job.error = error.model_copy(deep=True)
+            job.current_wait = None
+            return self._copy(job)
+
+    async def record_event(
+        self,
+        job_id: str,
+        event: JobEvent,
+        *,
+        current_wait: JobWait | None = None,
+        clear_current_wait: bool = False,
+        max_events: int = 100,
+    ) -> JobRecord:
+        async with self._lock:
+            job = self._require_job(job_id)
+            job.events.append(event.model_copy(deep=True))
+            if len(job.events) > max_events:
+                job.events = job.events[-max_events:]
+            if current_wait is not None:
+                job.current_wait = current_wait.model_copy(deep=True)
+            elif clear_current_wait:
+                job.current_wait = None
             return self._copy(job)
 
     def _require_job(self, job_id: str) -> JobRecord:

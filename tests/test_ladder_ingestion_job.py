@@ -4,10 +4,11 @@ from typing import Any
 
 import pytest
 
-from league_api.jobs.ingestion import run_ladder_ingestion
+from league_api.jobs.ingestion import RiotClientFactory, run_ladder_ingestion
 from league_api.jobs.models import JobStatus, JobType, LadderIngestionParams, LadderIngestionResult
 from league_api.jobs.queue import InMemoryJobQueue
 from league_api.jobs.store import InMemoryJobStore
+from league_api.riot.client import RiotRequestEventHandler
 from league_api.riot.errors import RiotApiError
 
 
@@ -70,6 +71,16 @@ class FakeRiotClient:
         return {"metadata": {"matchId": match_id}, "info": {}}
 
 
+def fake_riot_client_factory(fake_client: FakeRiotClient) -> RiotClientFactory:
+    def factory(
+        *,
+        request_event_handler: RiotRequestEventHandler | None = None,
+    ) -> FakeRiotClient:
+        return fake_client
+
+    return factory
+
+
 @pytest.mark.asyncio
 async def test_ladder_ingestion_deduplicates_match_ids_before_fetching_details() -> None:
     store = InMemoryJobStore()
@@ -83,7 +94,7 @@ async def test_ladder_ingestion_deduplicates_match_ids_before_fetching_details()
         LadderIngestionParams(),
         store,
         job.job_id,
-        riot_client_factory=lambda: fake_client,
+        riot_client_factory=fake_riot_client_factory(fake_client),
     )
 
     assert result.player_puuids == ["puuid-1", "puuid-2"]
@@ -116,7 +127,7 @@ async def test_failed_riot_call_marks_queue_job_failed() -> None:
             params,
             store_arg,
             job_id,
-            riot_client_factory=lambda: fake_client,
+            riot_client_factory=fake_riot_client_factory(fake_client),
         )
 
     queue = InMemoryJobQueue(store=store, ladder_ingestion_handler=handler)

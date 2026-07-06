@@ -1,16 +1,17 @@
-from collections.abc import Callable
 from types import TracebackType
 from typing import Any, Protocol, cast
 
 from league_api.jobs.models import (
     JobError,
+    JobEvent,
     JobProgress,
+    JobWait,
     LadderIngestionParams,
     LadderIngestionResult,
     LadderType,
 )
 from league_api.jobs.store import InMemoryJobStore
-from league_api.riot.client import RiotClient
+from league_api.riot.client import RiotClient, RiotRequestEvent, RiotRequestEventHandler
 from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
 
 
@@ -43,11 +44,19 @@ class RiotClientContext(Protocol):
     ) -> None: ...
 
 
-RiotClientFactory = Callable[[], RiotClientContext]
+class RiotClientFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        request_event_handler: RiotRequestEventHandler | None = None,
+    ) -> RiotClientContext: ...
 
 
-def _default_riot_client_factory() -> RiotClientContext:
-    return RiotClient.from_settings()
+def _default_riot_client_factory(
+    *,
+    request_event_handler: RiotRequestEventHandler | None = None,
+) -> RiotClientContext:
+    return RiotClient.from_settings(request_event_handler=request_event_handler)
 
 
 async def run_ladder_ingestion(
@@ -64,7 +73,9 @@ async def run_ladder_ingestion(
     seen_match_ids: set[str] = set()
     matches: dict[str, dict[str, Any]] = {}
 
-    async with riot_client_factory() as riot_client:
+    async with riot_client_factory(
+        request_event_handler=_job_riot_request_event_handler(store, job_id)
+    ) as riot_client:
         if params.ladder == LadderType.CHALLENGER:
             ladder_payload = await riot_client.get_league_v4(
                 f"/lol/league/v4/challengerleagues/by-queue/{params.queue}",
@@ -164,3 +175,68 @@ async def _fetch_player_match_ids(
         return None
 
     return [match_id for match_id in match_ids_payload if isinstance(match_id, str) and match_id]
+
+
+def _job_riot_request_event_handler(
+    store: InMemoryJobStore,
+    job_id: str,
+) -> RiotRequestEventHandler:
+    async def handle_event(event: RiotRequestEvent) -> None:
+        stage = _stage_for_riot_path(event.path)
+        job_event = JobEvent(
+            event_type=event.event_type,
+            message=_message_for_riot_event(event),
+            stage=stage,
+            path=event.path,
+            status_code=event.status_code,
+            attempt=event.attempt,
+            wait_seconds=event.wait_seconds,
+            resume_at=event.resume_at,
+            retry_after=event.retry_after,
+            occurred_at=event.occurred_at,
+        )
+
+        if event.event_type == "rate_limit_wait" and event.resume_at is not None:
+            wait = JobWait(
+                reason=event.rate_limit_reason or "rate_limit",
+                message=_message_for_riot_event(event),
+                resume_at=event.resume_at,
+                wait_seconds=event.wait_seconds or 0.0,
+                stage=stage,
+                path=event.path,
+                occurred_at=event.occurred_at,
+            )
+            await store.record_event(job_id, job_event, current_wait=wait)
+            return
+
+        await store.record_event(
+            job_id,
+            job_event,
+            clear_current_wait=event.event_type in {"request_started", "request_succeeded"},
+        )
+
+    return handle_event
+
+
+def _stage_for_riot_path(path: str) -> str:
+    if "/lol/league/v4/" in path:
+        return "ladder"
+    if path.endswith("/ids") and "/lol/match/v5/matches/by-puuid/" in path:
+        return "match_ids"
+    if "/lol/match/v5/matches/" in path:
+        return "match_detail"
+    return "riot_request"
+
+
+def _message_for_riot_event(event: RiotRequestEvent) -> str:
+    if event.event_type == "rate_limit_wait":
+        resume_text = event.resume_at.isoformat() if event.resume_at is not None else "unknown"
+        reason = "Riot 429" if event.rate_limit_reason == "riot_429" else "Riot rate limit"
+        return f"Waiting for {reason}; resumes at {resume_text}."
+    if event.event_type == "request_started":
+        return f"Riot request started for {event.path}."
+    if event.event_type == "request_succeeded":
+        return f"Riot request succeeded with status {event.status_code}."
+    if event.status_code is not None:
+        return f"Riot request failed with status {event.status_code}."
+    return event.error or "Riot request failed before receiving a response."

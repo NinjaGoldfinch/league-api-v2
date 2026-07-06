@@ -39,6 +39,18 @@ cp .env.example .env
 RIOT_API_KEY=your-development-key
 ```
 
+Riot calls use a process-local app rate limiter by default. The default budget
+matches the development-key app limit: `20` requests per `1` second and `100`
+requests per `120` seconds. Tune these values with
+`RIOT_APP_RATE_LIMIT_SHORT_REQUESTS`, `RIOT_APP_RATE_LIMIT_SHORT_WINDOW_SECONDS`,
+`RIOT_APP_RATE_LIMIT_LONG_REQUESTS`, and `RIOT_APP_RATE_LIMIT_LONG_WINDOW_SECONDS`.
+If Riot still returns `429`, the client waits for `Retry-After` and retries the
+same request up to `RIOT_RATE_LIMIT_MAX_RETRIES`.
+Set `RIOT_REQUEST_LOGS_ENABLED=false` to suppress Riot request console logs.
+When enabled, Riot logs use compact request lines such as
+`Riot      "GET /lol/match/v5/matches/OC1_1" 200 OK attempt=1 limit=20/1s-100/120s`
+and rate-limit waits include the same limit label plus `resumes_at`.
+
 ## Run
 
 ```bash
@@ -111,6 +123,36 @@ Poll job status:
 curl "http://localhost:8000/jobs/JOB_ID"
 ```
 
+List current job status:
+
+```bash
+curl "http://localhost:8000/jobs/status"
+curl "http://localhost:8000/jobs/status?running_only=false&verbose=true&include_events=true&include_result=true"
+```
+
+Job status responses include a `details` object with the Riot source, platform
+route, regional route, queue, queue label, ladder, tier, division, match count
+per player, player count, and request-count context. For the current Challenger
+apex ladder job, `tier` is `CHALLENGER` and `division` is `null` because the
+Riot endpoint is tier-scoped rather than division-scoped.
+
+Job status responses also include an `estimate` object showing the current
+fetching stage, a short description of the work in progress, completed/remaining
+Riot request counts, percent complete, and a rough `estimated_completed_at` when
+the job has enough completed requests to project from. The estimate also exposes
+`rate_limit_seconds_remaining` and `rate_limit_label`; the projected finish time
+uses the slower of observed request pace and the configured Riot app rate limit,
+plus any active rate-limit wait. `GET /jobs/status` returns queued and running
+jobs by default; set `running_only=false` to include terminal jobs. Set
+`verbose=true` for params, errors, and the latest event, then add
+`include_events=true` or `include_result=true` when you need the retained event
+history or completed result payloads.
+
+Job status also includes `current_wait` when a Riot rate-limit pause is active.
+That object includes `resume_at`, `wait_seconds`, `reason`, and the Riot path
+being retried. The `events` list keeps recent Riot request activity, including
+request start, success, failure, and rate-limit wait events.
+
 Fetch the final result:
 
 ```bash
@@ -123,8 +165,8 @@ Match-V5 match IDs per PUUID, deduplicates match IDs, and then fetches each
 unique match detail once. Account-V1 is not required for this stage.
 
 This stage intentionally does not use Redis, a database, Celery, RQ, Dramatiq,
-ARQ, or a persistent cache. Production-grade persistence, retries, rate-limit
-scheduling, and external workers are future stages. The
+ARQ, or a persistent cache. Production-grade persistence and external workers
+are future stages. The
 `/jobs/ingestion/ladder` endpoint is parameterised so Grandmaster, Master, and
 ranked-page ingestion can be added later without creating more start endpoints.
 
@@ -132,6 +174,12 @@ Run the live endpoint smoke scripts against a running local app:
 
 ```bash
 make test-endpoints
+```
+
+Or include them automatically after the normal local checks:
+
+```bash
+RUN_LIVE_ENDPOINTS=1 make check
 ```
 
 The scripts log each request, HTTP status, response summaries, and full response

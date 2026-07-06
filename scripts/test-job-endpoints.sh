@@ -45,6 +45,12 @@ run_http \
   "200"
 
 run_http \
+  "jobs_status_overview" \
+  "GET" \
+  "${BASE_URL}/jobs/status?verbose=true" \
+  "200"
+
+run_http \
   "jobs_get_result_initial" \
   "GET" \
   "${BASE_URL}/jobs/${JOB_ID}/result" \
@@ -78,7 +84,8 @@ while [[ "${SECONDS}" -lt "${deadline}" ]]; do
 
   current_status="$(json_field "${HTTP_LAST_BODY_FILE}" "status" 2>/dev/null || true)"
   progress="$(json_field "${HTTP_LAST_BODY_FILE}" "progress" 2>/dev/null || true)"
-  log_info "Job ${JOB_ID} status: ${current_status}; progress: ${progress}"
+  estimate="$(json_field "${HTTP_LAST_BODY_FILE}" "estimate" 2>/dev/null || true)"
+  log_info "Job ${JOB_ID} status: ${current_status}; progress: ${progress}; estimate: ${estimate}"
 
   if [[ "${current_status}" == "succeeded" || "${current_status}" == "failed" ]]; then
     terminal_status="${current_status}"

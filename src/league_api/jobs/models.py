@@ -36,6 +36,36 @@ class JobProgress(StrictBaseModel):
     errors: int = 0
 
 
+class JobDetails(StrictBaseModel):
+    source: str
+    platform_route: RiotPlatformRoute
+    regional_route: RiotRegionalRoute
+    queue: str
+    queue_label: str
+    ladder: LadderType
+    tier: str
+    division: str | None = None
+    match_count_per_player: int
+    player_count: int
+    match_id_request_count: int
+    match_detail_request_count: int
+
+
+class JobEstimate(StrictBaseModel):
+    stage: str
+    description: str
+    current_path: str | None = None
+    requests_completed: int
+    requests_total: int | None = None
+    requests_remaining: int | None = None
+    percent_complete: float | None = None
+    average_seconds_per_request: float | None = None
+    rate_limit_seconds_remaining: float | None = None
+    rate_limit_label: str | None = None
+    estimated_seconds_remaining: float | None = None
+    estimated_completed_at: datetime | None = None
+
+
 class JobError(StrictBaseModel):
     message: str
     stage: str | None = None
@@ -43,6 +73,29 @@ class JobError(StrictBaseModel):
     player_puuid: str | None = None
     match_id: str | None = None
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class JobWait(StrictBaseModel):
+    reason: str
+    message: str
+    resume_at: datetime
+    wait_seconds: float
+    stage: str | None = None
+    path: str | None = None
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class JobEvent(StrictBaseModel):
+    event_type: str
+    message: str
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    stage: str | None = None
+    path: str | None = None
+    status_code: int | None = None
+    attempt: int | None = None
+    wait_seconds: float | None = None
+    resume_at: datetime | None = None
+    retry_after: str | None = None
 
 
 class LadderIngestionParams(StrictBaseModel):
@@ -72,3 +125,5 @@ class JobRecord(StrictBaseModel):
     params: LadderIngestionParams
     result: LadderIngestionResult | None = None
     error: JobError | None = None
+    current_wait: JobWait | None = None
+    events: list[JobEvent] = Field(default_factory=list)
