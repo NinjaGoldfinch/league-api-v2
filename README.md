@@ -5,6 +5,10 @@ Match-V5 and League-V4 GET endpoints. It keeps the local URL paths aligned with
 Riot's documented paths and adds a small routing query parameter for choosing
 the Riot upstream region or platform.
 
+The app also includes a process-local in-memory job system for early ingestion
+work. Job state is kept only inside the running FastAPI process and is lost when
+the process restarts.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE).
@@ -92,6 +96,37 @@ curl "http://localhost:8000/lol/league/v4/entries/RANKED_SOLO_5x5/DIAMOND/I?plat
 
 Only `GET` is supported for mirrored Riot routes. There are no request bodies or
 custom `QUERY` method aliases.
+
+## Ingestion Jobs
+
+Start an in-memory ladder ingestion job:
+
+```bash
+curl -X POST "http://localhost:8000/jobs/ingestion/ladder?platform_route=oc1&regional_route=sea&queue=RANKED_SOLO_5x5&ladder=challenger&match_count=20"
+```
+
+Poll job status:
+
+```bash
+curl "http://localhost:8000/jobs/JOB_ID"
+```
+
+Fetch the final result:
+
+```bash
+curl "http://localhost:8000/jobs/JOB_ID/result"
+```
+
+The current `ladder=challenger` job fetches the OCE Challenger ladder from
+League-V4, extracts PUUIDs directly from the ladder entries, fetches 20 recent
+Match-V5 match IDs per PUUID, deduplicates match IDs, and then fetches each
+unique match detail once. Account-V1 is not required for this stage.
+
+This stage intentionally does not use Redis, a database, Celery, RQ, Dramatiq,
+ARQ, or a persistent cache. Production-grade persistence, retries, rate-limit
+scheduling, and external workers are future stages. The
+`/jobs/ingestion/ladder` endpoint is parameterised so Grandmaster, Master, and
+ranked-page ingestion can be added later without creating more start endpoints.
 
 ## Test
 
