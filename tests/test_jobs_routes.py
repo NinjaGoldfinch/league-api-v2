@@ -20,10 +20,10 @@ from league_api.main import create_app
 
 class FakeJobQueue:
     def __init__(self) -> None:
-        self.enqueued: list[str] = []
+        self.enqueued: list[tuple[str, int]] = []
 
-    async def enqueue(self, job_id: str) -> None:
-        self.enqueued.append(job_id)
+    async def enqueue(self, job_id: str, *, priority: int = 200) -> None:
+        self.enqueued.append((job_id, priority))
 
 
 def test_start_ladder_ingestion_job_returns_job_id_with_defaults() -> None:
@@ -72,7 +72,7 @@ def test_start_ladder_ingestion_job_returns_job_id_with_defaults() -> None:
     }
     assert body["current_wait"] is None
     assert body["events"] == []
-    assert fake_queue.enqueued == [body["job_id"]]
+    assert fake_queue.enqueued == [(body["job_id"], 200)]
 
     stored_job = asyncio.run(store.get_job(body["job_id"]))
     assert stored_job is not None

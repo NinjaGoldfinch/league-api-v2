@@ -4,7 +4,9 @@ from league_api.riot.errors import RiotApiError
 
 OC1 = "oc1"
 SEA = "sea"
+ASIA = "asia"
 
+DEFAULT_ACCOUNT_REGIONAL_ROUTE = ASIA
 DEFAULT_OCE_PLATFORM_ROUTE = OC1
 DEFAULT_OCE_REGIONAL_ROUTE = SEA
 
@@ -23,9 +25,15 @@ class CaseInsensitiveRoute(StrEnum):
 
 class RiotRegionalRoute(CaseInsensitiveRoute):
     AMERICAS = "americas"
-    ASIA = "asia"
+    ASIA = ASIA
     EUROPE = "europe"
     SEA = SEA
+
+
+class RiotAccountRegionalRoute(CaseInsensitiveRoute):
+    AMERICAS = "americas"
+    ASIA = ASIA
+    EUROPE = "europe"
 
 
 class RiotPlatformRoute(CaseInsensitiveRoute):
@@ -50,6 +58,12 @@ def normalize_regional_route(regional_route: str | RiotRegionalRoute) -> str:
     return _normalize_route(regional_route, RiotRegionalRoute, "regional")
 
 
+def normalize_account_regional_route(
+    regional_route: str | RiotAccountRegionalRoute,
+) -> str:
+    return _normalize_route(regional_route, RiotAccountRegionalRoute, "account regional")
+
+
 def normalize_platform_route(platform_route: str | RiotPlatformRoute) -> str:
     return _normalize_route(platform_route, RiotPlatformRoute, "platform")
 
@@ -62,6 +76,11 @@ def get_platform_base_url(platform_route: str | RiotPlatformRoute) -> str:
 def get_regional_base_url(regional_route: str | RiotRegionalRoute) -> str:
     """Return the Riot base URL for regional APIs."""
     return f"https://{normalize_regional_route(regional_route)}.api.riotgames.com"
+
+
+def get_account_regional_base_url(regional_route: str | RiotAccountRegionalRoute) -> str:
+    """Return the Riot base URL for Account-V1 regional APIs."""
+    return f"https://{normalize_account_regional_route(regional_route)}.api.riotgames.com"
 
 
 def _normalize_route(

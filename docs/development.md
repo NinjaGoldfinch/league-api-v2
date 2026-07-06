@@ -60,6 +60,12 @@ Start FastAPI locally:
 uvicorn league_api.main:app --reload
 ```
 
+Fetch an Account-V1 account:
+
+```bash
+curl "http://localhost:8000/riot/account/v1/accounts/by-puuid/PLAYER_PUUID?regional_route=asia"
+```
+
 Fetch Match-V5 match IDs:
 
 ```bash
@@ -76,6 +82,18 @@ Fetch a League-V4 entries page:
 
 ```bash
 curl "http://localhost:8000/lol/league/v4/entries/RANKED_SOLO_5x5/DIAMOND/I?platform_route=oc1&page=1"
+```
+
+Fetch a Summoner-V4 summoner:
+
+```bash
+curl "http://localhost:8000/lol/summoner/v4/summoners/by-puuid/PLAYER_PUUID?platform_route=oc1"
+```
+
+Queue a profile fetch by Riot ID:
+
+```bash
+curl -X POST "http://localhost:8000/profiles/fetch?riot_id=GAME_NAME%23TAG_LINE&account_regional_route=asia&platform_route=oc1&regional_route=sea"
 ```
 
 Only `GET` is supported for mirrored Riot endpoints. Use `/docs` to inspect the
@@ -129,7 +147,8 @@ RUN_LIVE_ENDPOINTS=1 make check
 The overall runner calls separate scripts for Riot mirror endpoints and job
 endpoints. It prints request logs, status codes, success/failure summaries, and
 paths to full response bodies and headers. Endpoints that require sample data
-are skipped unless `SAMPLE_PUUID` or `SAMPLE_MATCH_ID` are set.
+are skipped unless `SAMPLE_PUUID`, `SAMPLE_MATCH_ID`, or
+`SAMPLE_RIOT_GAME_NAME` plus `SAMPLE_RIOT_TAG_LINE` are set.
 
 Run one group directly when narrowing a failure:
 
@@ -143,14 +162,20 @@ Useful flags:
 ```bash
 BASE_URL="http://localhost:8000" make test-endpoints
 SAMPLE_PUUID="PLAYER_PUUID" SAMPLE_MATCH_ID="OC1_123" make test-endpoints
+SAMPLE_RIOT_GAME_NAME="GAME_NAME" SAMPLE_RIOT_TAG_LINE="TAG_LINE" make test-endpoints
 JOB_WAIT_FOR_COMPLETION=1 JOB_TIMEOUT_SECONDS=300 make test-endpoints
 SHOW_RESPONSE_BODY=1 make test-endpoints
 ```
 
 The job system is in-memory and process-local. Restarting FastAPI clears queued,
 running, completed, and failed jobs. This stage intentionally avoids Redis,
-databases, persistent caches, and external worker frameworks. Account-V1 is not
-needed because League-V4 ladder entries are treated as the source of PUUIDs.
+databases, persistent caches, and external worker frameworks. Account-V1 and
+Summoner-V4 are available as mirrored base endpoints but are not needed because
+League-V4 ladder entries are treated as the source of PUUIDs.
+Profile fetch jobs use higher queue priority than ladder ingestion, and manual
+profile Account-V1, Summoner-V4, and match-ID calls reserve 20% of the Riot app
+rate-limit budget by default. Automatic work can use that reserved budget in the
+last 10 seconds before a rate-limit window resets.
 
 ## Branch and PR Expectations
 

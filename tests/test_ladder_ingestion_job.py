@@ -5,11 +5,19 @@ from typing import Any
 import pytest
 
 from league_api.jobs.ingestion import RiotClientFactory, run_ladder_ingestion
-from league_api.jobs.models import JobStatus, JobType, LadderIngestionParams, LadderIngestionResult
+from league_api.jobs.models import (
+    JobStatus,
+    JobType,
+    LadderIngestionParams,
+    LadderIngestionResult,
+    ProfileFetchParams,
+    ProfileFetchResult,
+)
 from league_api.jobs.queue import InMemoryJobQueue
 from league_api.jobs.store import InMemoryJobStore
 from league_api.riot.client import RiotRequestEventHandler
 from league_api.riot.errors import RiotApiError
+from league_api.riot.rate_limiter import RiotRateLimitAudience
 
 
 class FakeRiotClient:
@@ -35,10 +43,14 @@ class FakeRiotClient:
         *,
         platform_route: str = "oc1",
         params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
     ) -> dict[str, Any]:
         assert path == "/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5"
         assert platform_route == "oc1"
         assert params is None
+        assert rate_limit_audience is RiotRateLimitAudience.AUTOMATIC
+        assert wait_for_rate_limit is True
         return {
             "entries": [
                 {"puuid": "puuid-1"},
@@ -54,8 +66,12 @@ class FakeRiotClient:
         *,
         regional_route: str = "sea",
         params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
     ) -> list[str] | dict[str, Any]:
         assert regional_route == "sea"
+        assert rate_limit_audience is RiotRateLimitAudience.AUTOMATIC
+        assert wait_for_rate_limit is True
         if path.endswith("/ids"):
             self.match_id_calls.append(path)
             assert params == {"start": 0, "count": 20}
@@ -130,7 +146,11 @@ async def test_failed_riot_call_marks_queue_job_failed() -> None:
             riot_client_factory=fake_riot_client_factory(fake_client),
         )
 
-    queue = InMemoryJobQueue(store=store, ladder_ingestion_handler=handler)
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=handler,
+        profile_fetch_handler=_unexpected_profile_handler,
+    )
     queue.start()
     try:
         job = await store.create_job(
@@ -154,3 +174,11 @@ async def test_failed_riot_call_marks_queue_job_failed() -> None:
         assert failed_record.error.message == "Riot API request failed with status 500."
     finally:
         await queue.stop()
+
+
+async def _unexpected_profile_handler(
+    params: ProfileFetchParams,
+    store_arg: InMemoryJobStore,
+    job_id: str,
+) -> ProfileFetchResult:
+    raise AssertionError("Profile handler should not be called in this test.")

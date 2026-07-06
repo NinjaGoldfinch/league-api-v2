@@ -2,16 +2,35 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from itertools import count
 
-from league_api.jobs.models import JobError, JobType, LadderIngestionParams, LadderIngestionResult
+from league_api.jobs.models import (
+    JobError,
+    JobResult,
+    JobType,
+    LadderIngestionParams,
+    LadderIngestionResult,
+    ProfileFetchParams,
+    ProfileFetchResult,
+)
 from league_api.jobs.store import InMemoryJobStore
 
 logger = logging.getLogger(__name__)
+
+PROFILE_FETCH_PRIORITY = 0
+PROFILE_MATCH_DETAILS_PRIORITY = 50
+LADDER_INGESTION_PRIORITY = 200
+DEFAULT_JOB_PRIORITY = LADDER_INGESTION_PRIORITY
 
 LadderIngestionHandler = Callable[
     [LadderIngestionParams, InMemoryJobStore, str],
     Awaitable[LadderIngestionResult],
 ]
+ProfileFetchHandler = Callable[
+    [ProfileFetchParams, InMemoryJobStore, str],
+    Awaitable[ProfileFetchResult],
+]
+QueuedJobItem = tuple[int, int, str | None]
 
 
 class InMemoryJobQueue:
@@ -22,10 +41,13 @@ class InMemoryJobQueue:
         *,
         store: InMemoryJobStore,
         ladder_ingestion_handler: LadderIngestionHandler,
+        profile_fetch_handler: ProfileFetchHandler,
     ) -> None:
         self._store = store
         self._ladder_ingestion_handler = ladder_ingestion_handler
-        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._profile_fetch_handler = profile_fetch_handler
+        self._queue: asyncio.PriorityQueue[QueuedJobItem] = asyncio.PriorityQueue()
+        self._sequence = count()
         self._worker_task: asyncio.Task[None] | None = None
         self._stopping = False
 
@@ -46,15 +68,15 @@ class InMemoryJobQueue:
         await self._fail_queued_jobs()
         self._worker_task = None
 
-    async def enqueue(self, job_id: str) -> None:
+    async def enqueue(self, job_id: str, *, priority: int = DEFAULT_JOB_PRIORITY) -> None:
         if self._stopping:
             msg = "Cannot enqueue jobs while the worker is stopping."
             raise RuntimeError(msg)
-        await self._queue.put(job_id)
+        await self._queue.put((priority, next(self._sequence), job_id))
 
     async def _run(self) -> None:
         while True:
-            job_id = await self._queue.get()
+            _, _, job_id = await self._queue.get()
             try:
                 if job_id is None:
                     return
@@ -72,8 +94,17 @@ class InMemoryJobQueue:
 
         await self._store.mark_running(job_id)
         try:
+            result: JobResult
             if job.job_type == JobType.LADDER_INGESTION:
+                if not isinstance(job.params, LadderIngestionParams):
+                    msg = "Ladder ingestion job has invalid params."
+                    raise ValueError(msg)
                 result = await self._ladder_ingestion_handler(job.params, self._store, job_id)
+            elif job.job_type == JobType.PROFILE_FETCH:
+                if not isinstance(job.params, ProfileFetchParams):
+                    msg = "Profile fetch job has invalid params."
+                    raise ValueError(msg)
+                result = await self._profile_fetch_handler(job.params, self._store, job_id)
             else:
                 msg = f"Unsupported job type: {job.job_type}"
                 raise ValueError(msg)
@@ -96,7 +127,7 @@ class InMemoryJobQueue:
     async def _fail_queued_jobs(self) -> None:
         while True:
             try:
-                job_id = self._queue.get_nowait()
+                _, _, job_id = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
 

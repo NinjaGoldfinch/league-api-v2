@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
+from league_api.riot.routing import RiotAccountRegionalRoute, RiotPlatformRoute, RiotRegionalRoute
 
 
 class StrictBaseModel(BaseModel):
@@ -20,6 +20,7 @@ class JobStatus(StrEnum):
 
 class JobType(StrEnum):
     LADDER_INGESTION = "ladder_ingestion"
+    PROFILE_FETCH = "profile_fetch"
 
 
 class LadderType(StrEnum):
@@ -36,7 +37,7 @@ class JobProgress(StrictBaseModel):
     errors: int = 0
 
 
-class JobDetails(StrictBaseModel):
+class LadderJobDetails(StrictBaseModel):
     source: str
     platform_route: RiotPlatformRoute
     regional_route: RiotRegionalRoute
@@ -49,6 +50,23 @@ class JobDetails(StrictBaseModel):
     player_count: int
     match_id_request_count: int
     match_detail_request_count: int
+
+
+class ProfileJobDetails(StrictBaseModel):
+    source: str
+    riot_id: str
+    game_name: str
+    tag_line: str
+    puuid: str | None = None
+    account_regional_route: RiotAccountRegionalRoute
+    platform_route: RiotPlatformRoute
+    regional_route: RiotRegionalRoute
+    match_count: int
+    match_id_request_count: int
+    match_detail_request_count: int
+
+
+JobDetails = LadderJobDetails | ProfileJobDetails
 
 
 class JobEstimate(StrictBaseModel):
@@ -106,12 +124,41 @@ class LadderIngestionParams(StrictBaseModel):
     match_count: int = Field(default=20, ge=1, le=100)
 
 
+class ProfileFetchParams(StrictBaseModel):
+    game_name: str = Field(min_length=1)
+    tag_line: str = Field(min_length=1)
+    account_regional_route: RiotAccountRegionalRoute = RiotAccountRegionalRoute.ASIA
+    platform_route: RiotPlatformRoute = RiotPlatformRoute.OC1
+    regional_route: RiotRegionalRoute = RiotRegionalRoute.SEA
+    match_count: int = Field(default=20, ge=20, le=20)
+    account: dict[str, Any] | None = None
+    summoner: dict[str, Any] | None = None
+    match_ids: list[str] | None = None
+
+    @property
+    def riot_id(self) -> str:
+        return f"{self.game_name}#{self.tag_line}"
+
+
 class LadderIngestionResult(StrictBaseModel):
     summary: JobProgress
     player_puuids: list[str]
     match_ids: list[str]
     matches: dict[str, dict[str, Any]]
     errors: list[JobError] = Field(default_factory=list)
+
+
+class ProfileFetchResult(StrictBaseModel):
+    summary: JobProgress
+    account: dict[str, Any]
+    summoner: dict[str, Any]
+    match_ids: list[str]
+    matches: dict[str, dict[str, Any]]
+    errors: list[JobError] = Field(default_factory=list)
+
+
+JobParams = LadderIngestionParams | ProfileFetchParams
+JobResult = LadderIngestionResult | ProfileFetchResult
 
 
 class JobRecord(StrictBaseModel):
@@ -122,8 +169,8 @@ class JobRecord(StrictBaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     progress: JobProgress = Field(default_factory=JobProgress)
-    params: LadderIngestionParams
-    result: LadderIngestionResult | None = None
+    params: JobParams
+    result: JobResult | None = None
     error: JobError | None = None
     current_wait: JobWait | None = None
     events: list[JobEvent] = Field(default_factory=list)

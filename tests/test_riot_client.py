@@ -8,7 +8,11 @@ from pytest import LogCaptureFixture
 from league_api.riot.client import RiotClient, RiotRequestEvent
 from league_api.riot.errors import RiotApiError, RiotConfigurationError, RiotRateLimitError
 from league_api.riot.rate_limiter import RiotRateLimit, RiotRateLimitManager
-from league_api.riot.routing import get_platform_base_url, get_regional_base_url
+from league_api.riot.routing import (
+    get_account_regional_base_url,
+    get_platform_base_url,
+    get_regional_base_url,
+)
 
 
 class FakeClock:
@@ -93,6 +97,19 @@ async def test_riot_client_builds_generic_match_v5_url(respx_mock: respx.MockRou
 
 
 @pytest.mark.asyncio
+async def test_riot_client_builds_generic_account_v1_url(respx_mock: respx.MockRouter) -> None:
+    route = respx_mock.get(
+        "https://asia.api.riotgames.com/riot/account/v1/accounts/by-puuid/player-1",
+    ).mock(return_value=httpx.Response(200, json={"puuid": "player-1"}))
+
+    async with RiotClient(api_key="test-key") as client:
+        account = await client.get_account_v1("/riot/account/v1/accounts/by-puuid/player-1")
+
+    assert route.called
+    assert account == {"puuid": "player-1"}
+
+
+@pytest.mark.asyncio
 async def test_riot_client_builds_generic_league_v4_url(respx_mock: respx.MockRouter) -> None:
     route = respx_mock.get(
         "https://oc1.api.riotgames.com/lol/league/v4/entries/by-puuid/player-1",
@@ -103,6 +120,19 @@ async def test_riot_client_builds_generic_league_v4_url(respx_mock: respx.MockRo
 
     assert route.called
     assert entries == []
+
+
+@pytest.mark.asyncio
+async def test_riot_client_builds_generic_summoner_v4_url(respx_mock: respx.MockRouter) -> None:
+    route = respx_mock.get(
+        "https://oc1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/player-1",
+    ).mock(return_value=httpx.Response(200, json={"puuid": "player-1"}))
+
+    async with RiotClient(api_key="test-key") as client:
+        summoner = await client.get_summoner_v4("/lol/summoner/v4/summoners/by-puuid/player-1")
+
+    assert route.called
+    assert summoner == {"puuid": "player-1"}
 
 
 @pytest.mark.asyncio
@@ -263,10 +293,19 @@ def test_riot_route_builders_reject_non_riot_hosts() -> None:
     with pytest.raises(RiotApiError, match="Unsupported Riot regional route"):
         get_regional_base_url("attacker.example/anything")
 
+    with pytest.raises(RiotApiError, match="Unsupported Riot account regional route"):
+        get_account_regional_base_url("attacker.example/anything")
+
     with pytest.raises(RiotApiError, match="Unsupported Riot platform route"):
         get_platform_base_url("attacker.example/anything")
 
 
 def test_riot_route_builders_accept_documented_routes_case_insensitively() -> None:
     assert get_regional_base_url("SEA") == "https://sea.api.riotgames.com"
+    assert get_account_regional_base_url("ASIA") == "https://asia.api.riotgames.com"
     assert get_platform_base_url("OC1") == "https://oc1.api.riotgames.com"
+
+
+def test_account_v1_route_builder_rejects_match_v5_sea_route() -> None:
+    with pytest.raises(RiotApiError, match="Unsupported Riot account regional route"):
+        get_account_regional_base_url("SEA")

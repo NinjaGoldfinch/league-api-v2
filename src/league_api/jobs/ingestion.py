@@ -12,6 +12,7 @@ from league_api.jobs.models import (
 )
 from league_api.jobs.store import InMemoryJobStore
 from league_api.riot.client import RiotClient, RiotRequestEvent, RiotRequestEventHandler
+from league_api.riot.rate_limiter import RiotRateLimitAudience
 from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
 
 
@@ -22,6 +23,8 @@ class RiotApiClient(Protocol):
         *,
         regional_route: str | RiotRegionalRoute = "sea",
         params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
     ) -> Any: ...
 
     async def get_league_v4(
@@ -30,6 +33,8 @@ class RiotApiClient(Protocol):
         *,
         platform_route: str | RiotPlatformRoute = "oc1",
         params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
     ) -> Any: ...
 
 
@@ -80,6 +85,7 @@ async def run_ladder_ingestion(
             ladder_payload = await riot_client.get_league_v4(
                 f"/lol/league/v4/challengerleagues/by-queue/{params.queue}",
                 platform_route=params.platform_route,
+                rate_limit_audience=RiotRateLimitAudience.AUTOMATIC,
             )
         else:
             msg = f"Unsupported ladder type: {params.ladder}"
@@ -113,6 +119,7 @@ async def run_ladder_ingestion(
             match_payload = await riot_client.get_match_v5(
                 f"/lol/match/v5/matches/{match_id}",
                 regional_route=params.regional_route,
+                rate_limit_audience=RiotRateLimitAudience.AUTOMATIC,
             )
             if not isinstance(match_payload, dict):
                 msg = f"Match detail for {match_id} did not return an object."
@@ -159,6 +166,7 @@ async def _fetch_player_match_ids(
     match_ids_payload = await riot_client.get_match_v5(
         f"/lol/match/v5/matches/by-puuid/{puuid}/ids",
         regional_route=params.regional_route,
+        rate_limit_audience=RiotRateLimitAudience.AUTOMATIC,
         params={
             "start": 0,
             "count": params.match_count,
@@ -219,6 +227,10 @@ def _job_riot_request_event_handler(
 
 
 def _stage_for_riot_path(path: str) -> str:
+    if "/riot/account/v1/" in path:
+        return "account"
+    if "/lol/summoner/v4/" in path:
+        return "summoner"
     if "/lol/league/v4/" in path:
         return "ladder"
     if path.endswith("/ids") and "/lol/match/v5/matches/by-puuid/" in path:
