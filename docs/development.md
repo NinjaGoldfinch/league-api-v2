@@ -60,29 +60,26 @@ Start FastAPI locally:
 uvicorn league_api.main:app --reload
 ```
 
-Trigger the first ingestion flow:
+Fetch Match-V5 match IDs:
 
 ```bash
-curl "http://localhost:8000/ingestion/ladder-page?platform_route=oc1&queue=RANKED_SOLO_5x5&tier=CHALLENGER"
+curl "http://localhost:8000/lol/match/v5/matches/by-puuid/PLAYER_PUUID/ids?regional_route=sea&start=0&count=20"
 ```
 
-Or send the same inputs with the HTTP `QUERY` method:
+Fetch a League-V4 Challenger page:
 
 ```bash
-curl -X QUERY "http://localhost:8000/ingestion/ladder-page" \
-  -H "Content-Type: application/json" \
-  -d '{"platform_route":"oc1","queue":"RANKED_SOLO_5x5","tier":"DIAMOND","division":"I","page":1}'
+curl "http://localhost:8000/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5?platform_route=oc1"
 ```
 
-The flow is:
+Fetch a League-V4 entries page:
 
-```text
-Ladder endpoint -> players -> PUUIDs
+```bash
+curl "http://localhost:8000/lol/league/v4/entries/RANKED_SOLO_5x5/DIAMOND/I?platform_route=oc1&page=1"
 ```
 
-Challenger, Grandmaster, and Master use Riot's apex League-V4 endpoints, which do not take a division or page. Lower tiers use the entries endpoint with `division` and optional `page`.
-
-This stage does not persist data to PostgreSQL and does not fetch Match-V5 history or match details.
+Only `GET` is supported for mirrored Riot endpoints. Use `/docs` to inspect the
+full current local OpenAPI documentation.
 
 ## Branch and PR Expectations
 
@@ -92,6 +89,8 @@ Keep changes focused and easy to review. Include tests for new behavior, update 
 
 Do not commit `.env` or real Riot API keys. Use `.env.example` for documented defaults and keep local secrets in `.env`.
 
-## Future Implementation Stages
+## Current Scope
 
-Planned stages include Match-V5 history discovery, database models and Alembic migrations, persisted deduplication by `match_id`, and background worker orchestration.
+Keep the project focused on the GET-only Match-V5 and League-V4 mirror routes.
+Avoid adding ingestion, persistence, or worker code until those behaviors are
+part of an explicit next stage.

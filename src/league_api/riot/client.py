@@ -8,21 +8,16 @@ from league_api.riot.errors import RiotApiError, RiotConfigurationError, RiotRat
 from league_api.riot.routing import (
     DEFAULT_OCE_PLATFORM_ROUTE,
     DEFAULT_OCE_REGIONAL_ROUTE,
+    RiotPlatformRoute,
+    RiotRegionalRoute,
     get_platform_base_url,
     get_regional_base_url,
 )
-from league_api.riot.schemas import LeagueEntry
-
-APEX_TIER_PATHS = {
-    "CHALLENGER": "challengerleagues",
-    "GRANDMASTER": "grandmasterleagues",
-    "MASTER": "masterleagues",
-}
 
 
 @dataclass(slots=True)
 class RiotClient:
-    """Async Riot API client for the first ingestion stage."""
+    """Async Riot API client for Match-V5 and League-V4 mirror routes."""
 
     api_key: str | None
     platform_route: str = DEFAULT_OCE_PLATFORM_ROUTE
@@ -56,84 +51,51 @@ class RiotClient:
             await self._client.aclose()
             self._client = None
 
-    async def fetch_ladder_page(
+    async def get_match_v5(
         self,
-        queue: str,
-        tier: str,
-        division: str | None = None,
-        page: int | None = None,
-        platform_route: str = DEFAULT_OCE_PLATFORM_ROUTE,
-    ) -> list[LeagueEntry]:
-        apex_path = APEX_TIER_PATHS.get(tier.upper())
-        if apex_path is not None:
-            data = await self._get_json(
-                get_platform_base_url(platform_route),
-                f"/lol/league/v4/{apex_path}/by-queue/{queue}",
-            )
-            if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
-                msg = "Riot apex ladder response did not contain an entries list."
-                raise RiotApiError(msg)
-            return [LeagueEntry.model_validate(entry) for entry in data["entries"]]
+        path: str,
+        *,
+        regional_route: str | RiotRegionalRoute = DEFAULT_OCE_REGIONAL_ROUTE,
+        params: dict[str, int | str | None] | None = None,
+    ) -> Any:
+        return await self._get_json(
+            get_regional_base_url(regional_route),
+            path,
+            params=params,
+        )
 
-        if not division:
-            msg = "division is required for non-apex ranked ladder tiers."
-            raise RiotApiError(msg)
-
-        data = await self._get_json(
+    async def get_league_v4(
+        self,
+        path: str,
+        *,
+        platform_route: str | RiotPlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
+        params: dict[str, int | str | None] | None = None,
+    ) -> Any:
+        return await self._get_json(
             get_platform_base_url(platform_route),
-            f"/lol/league/v4/entries/{queue}/{tier}/{division}",
-            params={"page": page or 1},
+            path,
+            params=params,
         )
-        if not isinstance(data, list):
-            msg = "Riot ladder response was not a list."
-            raise RiotApiError(msg)
-        return [LeagueEntry.model_validate(entry) for entry in data]
-
-    async def fetch_match_ids_by_puuid(
-        self,
-        puuid: str,
-        start: int = 0,
-        count: int = 20,
-        regional_route: str = DEFAULT_OCE_REGIONAL_ROUTE,
-    ) -> list[str]:
-        data = await self._get_json(
-            get_regional_base_url(regional_route),
-            f"/lol/match/v5/matches/by-puuid/{puuid}/ids",
-            params={"start": start, "count": count},
-        )
-        if not isinstance(data, list) or not all(isinstance(match_id, str) for match_id in data):
-            msg = "Riot match history response was not a list of match IDs."
-            raise RiotApiError(msg)
-        return data
-
-    async def fetch_match_by_id(
-        self,
-        match_id: str,
-        regional_route: str = DEFAULT_OCE_REGIONAL_ROUTE,
-    ) -> dict[str, Any]:
-        data = await self._get_json(
-            get_regional_base_url(regional_route),
-            f"/lol/match/v5/matches/{match_id}",
-        )
-        if not isinstance(data, dict):
-            msg = "Riot match detail response was not an object."
-            raise RiotApiError(msg)
-        return data
 
     async def _get_json(
         self,
         base_url: str,
         path: str,
         *,
-        params: dict[str, int] | None = None,
+        params: dict[str, int | str | None] | None = None,
     ) -> Any:
         if not self.api_key:
             msg = "RIOT_API_KEY is required before calling the Riot API."
             raise RiotConfigurationError(msg)
 
         client = self._ensure_client()
+        filtered_params = (
+            {key: value for key, value in params.items() if value is not None}
+            if params is not None
+            else None
+        )
         try:
-            response = await client.get(f"{base_url}{path}", params=params)
+            response = await client.get(f"{base_url}{path}", params=filtered_params)
         except httpx.HTTPError as exc:
             msg = f"Riot request failed before receiving a response: {exc.__class__.__name__}"
             raise RiotApiError(msg) from exc
