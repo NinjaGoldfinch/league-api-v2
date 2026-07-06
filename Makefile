@@ -1,4 +1,4 @@
-.PHONY: install run test lint format typecheck check
+.PHONY: install run test lint format typecheck check test-endpoints test-riot-endpoints test-job-endpoints
 
 install:
 	python -m pip install --upgrade pip
@@ -24,3 +24,12 @@ check:
 	ruff check .
 	mypy
 	pytest
+
+test-endpoints:
+	bash scripts/test-endpoints.sh
+
+test-riot-endpoints:
+	bash scripts/test-riot-endpoints.sh
+
+test-job-endpoints:
+	bash scripts/test-job-endpoints.sh

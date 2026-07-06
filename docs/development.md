@@ -94,6 +94,33 @@ curl "http://localhost:8000/jobs/JOB_ID"
 curl "http://localhost:8000/jobs/JOB_ID/result"
 ```
 
+Run all live endpoint smoke scripts:
+
+```bash
+make test-endpoints
+```
+
+The overall runner calls separate scripts for Riot mirror endpoints and job
+endpoints. It prints request logs, status codes, success/failure summaries, and
+paths to full response bodies and headers. Endpoints that require sample data
+are skipped unless `SAMPLE_PUUID` or `SAMPLE_MATCH_ID` are set.
+
+Run one group directly when narrowing a failure:
+
+```bash
+make test-riot-endpoints
+make test-job-endpoints
+```
+
+Useful flags:
+
+```bash
+BASE_URL="http://localhost:8000" make test-endpoints
+SAMPLE_PUUID="PLAYER_PUUID" SAMPLE_MATCH_ID="OC1_123" make test-endpoints
+JOB_WAIT_FOR_COMPLETION=1 JOB_TIMEOUT_SECONDS=300 make test-endpoints
+SHOW_RESPONSE_BODY=1 make test-endpoints
+```
+
 The job system is in-memory and process-local. Restarting FastAPI clears queued,
 running, completed, and failed jobs. This stage intentionally avoids Redis,
 databases, persistent caches, and external worker frameworks. Account-V1 is not

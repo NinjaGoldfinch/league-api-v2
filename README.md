@@ -128,6 +128,25 @@ scheduling, and external workers are future stages. The
 `/jobs/ingestion/ladder` endpoint is parameterised so Grandmaster, Master, and
 ranked-page ingestion can be added later without creating more start endpoints.
 
+Run the live endpoint smoke scripts against a running local app:
+
+```bash
+make test-endpoints
+```
+
+The scripts log each request, HTTP status, response summaries, and full response
+bodies under a timestamped directory in `/tmp`. Set `SAMPLE_PUUID` and
+`SAMPLE_MATCH_ID` to exercise the PUUID, match detail, and timeline endpoints.
+Set `JOB_WAIT_FOR_COMPLETION=1` to poll a ladder ingestion job until it succeeds
+or fails.
+
+Run the script groups separately when you only want one surface:
+
+```bash
+make test-riot-endpoints
+make test-job-endpoints
+```
+
 ## Test
 
 ```bash
