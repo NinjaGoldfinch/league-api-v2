@@ -3,7 +3,8 @@ import pytest
 import respx
 
 from league_api.riot.client import RiotClient
-from league_api.riot.errors import RiotConfigurationError, RiotRateLimitError
+from league_api.riot.errors import RiotApiError, RiotConfigurationError, RiotRateLimitError
+from league_api.riot.routing import get_platform_base_url, get_regional_base_url
 
 
 @pytest.mark.asyncio
@@ -107,3 +108,16 @@ async def test_riot_client_rate_limit_error_includes_retry_after(
             await client.get_match_v5("/lol/match/v5/matches/OC1_1")
 
     assert exc_info.value.retry_after == "17"
+
+
+def test_riot_route_builders_reject_non_riot_hosts() -> None:
+    with pytest.raises(RiotApiError, match="Unsupported Riot regional route"):
+        get_regional_base_url("attacker.example/anything")
+
+    with pytest.raises(RiotApiError, match="Unsupported Riot platform route"):
+        get_platform_base_url("attacker.example/anything")
+
+
+def test_riot_route_builders_accept_documented_routes_case_insensitively() -> None:
+    assert get_regional_base_url("SEA") == "https://sea.api.riotgames.com"
+    assert get_platform_base_url("OC1") == "https://oc1.api.riotgames.com"

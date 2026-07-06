@@ -8,6 +8,8 @@ from league_api.riot.errors import RiotApiError, RiotConfigurationError, RiotRat
 from league_api.riot.routing import (
     DEFAULT_OCE_PLATFORM_ROUTE,
     DEFAULT_OCE_REGIONAL_ROUTE,
+    RiotPlatformRoute,
+    RiotRegionalRoute,
     get_platform_base_url,
     get_regional_base_url,
 )
@@ -53,7 +55,7 @@ class RiotClient:
         self,
         path: str,
         *,
-        regional_route: str = DEFAULT_OCE_REGIONAL_ROUTE,
+        regional_route: str | RiotRegionalRoute = DEFAULT_OCE_REGIONAL_ROUTE,
         params: dict[str, int | str | None] | None = None,
     ) -> Any:
         return await self._get_json(
@@ -66,7 +68,7 @@ class RiotClient:
         self,
         path: str,
         *,
-        platform_route: str = DEFAULT_OCE_PLATFORM_ROUTE,
+        platform_route: str | RiotPlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
         params: dict[str, int | str | None] | None = None,
     ) -> Any:
         return await self._get_json(

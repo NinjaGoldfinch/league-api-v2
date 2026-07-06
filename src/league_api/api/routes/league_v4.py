@@ -4,12 +4,12 @@ from fastapi import APIRouter, Path, Query
 
 from league_api.api.routes.riot import RiotClientDependency, call_riot
 from league_api.riot.client import RiotClient
-from league_api.riot.routing import DEFAULT_OCE_PLATFORM_ROUTE
+from league_api.riot.routing import RiotPlatformRoute
 
 router = APIRouter(prefix="/lol/league/v4", tags=["league-v4"])
 
 PlatformRoute = Annotated[
-    str,
+    RiotPlatformRoute,
     Query(
         description=(
             "Riot platform routing value used as the upstream host prefix, for example "
@@ -27,13 +27,13 @@ PlatformRoute = Annotated[
 async def get_challenger_league(
     riot_client: Annotated[RiotClient, RiotClientDependency],
     queue: Annotated[str, Path(min_length=1, description="Ranked queue.")],
-    platform_route: PlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
+    platform_route: PlatformRoute = RiotPlatformRoute.OC1,
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
             return await riot_client.get_league_v4(
                 f"/lol/league/v4/challengerleagues/by-queue/{queue}",
-                platform_route=platform_route,
+                platform_route=platform_route.value,
             )
 
     return await call_riot(operation)
@@ -50,13 +50,13 @@ async def get_league_entries_by_puuid(
         str,
         Path(alias="encryptedPUUID", min_length=1, description="Encrypted player PUUID."),
     ],
-    platform_route: PlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
+    platform_route: PlatformRoute = RiotPlatformRoute.OC1,
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
             return await riot_client.get_league_v4(
                 f"/lol/league/v4/entries/by-puuid/{encrypted_puuid}",
-                platform_route=platform_route,
+                platform_route=platform_route.value,
             )
 
     return await call_riot(operation)
@@ -75,14 +75,14 @@ async def get_league_entries(
     queue: Annotated[str, Path(min_length=1, description="Ranked queue.")],
     tier: Annotated[str, Path(min_length=1, description="Ranked tier.")],
     division: Annotated[str, Path(min_length=1, description="Ranked division.")],
-    platform_route: PlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
+    platform_route: PlatformRoute = RiotPlatformRoute.OC1,
     page: Annotated[int | None, Query(ge=1, description="Page index.")] = None,
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
             return await riot_client.get_league_v4(
                 f"/lol/league/v4/entries/{queue}/{tier}/{division}",
-                platform_route=platform_route,
+                platform_route=platform_route.value,
                 params={"page": page},
             )
 
@@ -99,13 +99,13 @@ async def get_league_entries(
 async def get_grandmaster_league(
     riot_client: Annotated[RiotClient, RiotClientDependency],
     queue: Annotated[str, Path(min_length=1, description="Ranked queue.")],
-    platform_route: PlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
+    platform_route: PlatformRoute = RiotPlatformRoute.OC1,
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
             return await riot_client.get_league_v4(
                 f"/lol/league/v4/grandmasterleagues/by-queue/{queue}",
-                platform_route=platform_route,
+                platform_route=platform_route.value,
             )
 
     return await call_riot(operation)
@@ -119,13 +119,13 @@ async def get_grandmaster_league(
 async def get_master_league(
     riot_client: Annotated[RiotClient, RiotClientDependency],
     queue: Annotated[str, Path(min_length=1, description="Ranked queue.")],
-    platform_route: PlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
+    platform_route: PlatformRoute = RiotPlatformRoute.OC1,
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
             return await riot_client.get_league_v4(
                 f"/lol/league/v4/masterleagues/by-queue/{queue}",
-                platform_route=platform_route,
+                platform_route=platform_route.value,
             )
 
     return await call_riot(operation)

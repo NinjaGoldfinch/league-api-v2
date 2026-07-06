@@ -4,12 +4,12 @@ from fastapi import APIRouter, Path, Query
 
 from league_api.api.routes.riot import RiotClientDependency, call_riot
 from league_api.riot.client import RiotClient
-from league_api.riot.routing import DEFAULT_OCE_REGIONAL_ROUTE
+from league_api.riot.routing import RiotRegionalRoute
 
 router = APIRouter(prefix="/lol/match/v5", tags=["match-v5"])
 
 RegionalRoute = Annotated[
-    str,
+    RiotRegionalRoute,
     Query(
         description=(
             "Riot regional routing value used as the upstream host prefix. Match-V5 "
@@ -31,7 +31,7 @@ RegionalRoute = Annotated[
 async def get_match_ids_by_puuid(
     riot_client: Annotated[RiotClient, RiotClientDependency],
     puuid: Annotated[str, Path(min_length=1, description="Player PUUID.")],
-    regional_route: RegionalRoute = DEFAULT_OCE_REGIONAL_ROUTE,
+    regional_route: RegionalRoute = RiotRegionalRoute.SEA,
     start_time: Annotated[
         int | None,
         Query(alias="startTime", ge=0, description="Epoch timestamp in seconds."),
@@ -52,7 +52,7 @@ async def get_match_ids_by_puuid(
         async with riot_client:
             return await riot_client.get_match_v5(
                 f"/lol/match/v5/matches/by-puuid/{puuid}/ids",
-                regional_route=regional_route,
+                regional_route=regional_route.value,
                 params={
                     "startTime": start_time,
                     "endTime": end_time,
@@ -74,13 +74,13 @@ async def get_match_ids_by_puuid(
 async def get_replays_by_puuid(
     riot_client: Annotated[RiotClient, RiotClientDependency],
     puuid: Annotated[str, Path(min_length=1, description="Player PUUID.")],
-    regional_route: RegionalRoute = DEFAULT_OCE_REGIONAL_ROUTE,
+    regional_route: RegionalRoute = RiotRegionalRoute.SEA,
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
             return await riot_client.get_match_v5(
                 f"/lol/match/v5/matches/by-puuid/{puuid}/replays",
-                regional_route=regional_route,
+                regional_route=regional_route.value,
             )
 
     return await call_riot(operation)
@@ -94,13 +94,13 @@ async def get_replays_by_puuid(
 async def get_match(
     riot_client: Annotated[RiotClient, RiotClientDependency],
     match_id: Annotated[str, Path(alias="matchId", min_length=1, description="Match ID.")],
-    regional_route: RegionalRoute = DEFAULT_OCE_REGIONAL_ROUTE,
+    regional_route: RegionalRoute = RiotRegionalRoute.SEA,
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
             return await riot_client.get_match_v5(
                 f"/lol/match/v5/matches/{match_id}",
-                regional_route=regional_route,
+                regional_route=regional_route.value,
             )
 
     return await call_riot(operation)
@@ -114,13 +114,13 @@ async def get_match(
 async def get_timeline(
     riot_client: Annotated[RiotClient, RiotClientDependency],
     match_id: Annotated[str, Path(alias="matchId", min_length=1, description="Match ID.")],
-    regional_route: RegionalRoute = DEFAULT_OCE_REGIONAL_ROUTE,
+    regional_route: RegionalRoute = RiotRegionalRoute.SEA,
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
             return await riot_client.get_match_v5(
                 f"/lol/match/v5/matches/{match_id}/timeline",
-                regional_route=regional_route,
+                regional_route=regional_route.value,
             )
 
     return await call_riot(operation)

@@ -88,7 +88,7 @@ def test_match_ids_route_forwards_all_query_flags() -> None:
         {
             "method": "get_match_v5",
             "path": "/lol/match/v5/matches/by-puuid/player-1/ids",
-            "regional_route": "SEA",
+            "regional_route": "sea",
             "params": {
                 "startTime": 1710000000,
                 "endTime": 1710003600,
@@ -128,19 +128,19 @@ def test_match_detail_and_timeline_routes_mirror_match_v5_paths() -> None:
         {
             "method": "get_match_v5",
             "path": "/lol/match/v5/matches/OC1_1",
-            "regional_route": "SEA",
+            "regional_route": "sea",
             "params": None,
         },
         {
             "method": "get_match_v5",
             "path": "/lol/match/v5/matches/OC1_1/timeline",
-            "regional_route": "SEA",
+            "regional_route": "sea",
             "params": None,
         },
         {
             "method": "get_match_v5",
             "path": "/lol/match/v5/matches/by-puuid/player-1/replays",
-            "regional_route": "SEA",
+            "regional_route": "sea",
             "params": None,
         },
     ]
@@ -181,31 +181,31 @@ def test_league_v4_routes_mirror_paths_and_page_flag() -> None:
         {
             "method": "get_league_v4",
             "path": "/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5",
-            "platform_route": "OC1",
+            "platform_route": "oc1",
             "params": None,
         },
         {
             "method": "get_league_v4",
             "path": "/lol/league/v4/entries/by-puuid/player-1",
-            "platform_route": "OC1",
+            "platform_route": "oc1",
             "params": None,
         },
         {
             "method": "get_league_v4",
             "path": "/lol/league/v4/entries/RANKED_SOLO_5x5/DIAMOND/I",
-            "platform_route": "OC1",
+            "platform_route": "oc1",
             "params": {"page": 2},
         },
         {
             "method": "get_league_v4",
             "path": "/lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5",
-            "platform_route": "OC1",
+            "platform_route": "oc1",
             "params": None,
         },
         {
             "method": "get_league_v4",
             "path": "/lol/league/v4/masterleagues/by-queue/RANKED_SOLO_5x5",
-            "platform_route": "OC1",
+            "platform_route": "oc1",
             "params": None,
         },
     ]
@@ -227,3 +227,35 @@ def test_mirror_endpoints_are_get_only_and_documented() -> None:
             "parameters"
         ]
     }
+
+
+def test_match_v5_rejects_non_riot_regional_route_before_calling_client() -> None:
+    fake_client = FakeRiotClient()
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_client)
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.get(
+                "/lol/match/v5/matches/OC1_1",
+                params={"regional_route": "attacker.example/anything"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert fake_client.calls == []
+
+
+def test_league_v4_rejects_non_riot_platform_route_before_calling_client() -> None:
+    fake_client = FakeRiotClient()
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_client)
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.get(
+                "/lol/league/v4/masterleagues/by-queue/RANKED_SOLO_5x5",
+                params={"platform_route": "attacker.example/anything"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert fake_client.calls == []
