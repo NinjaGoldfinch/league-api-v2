@@ -11,13 +11,6 @@ from league_api.riot.routing import (
     get_platform_base_url,
     get_regional_base_url,
 )
-from league_api.riot.schemas import LeagueEntry
-
-APEX_TIER_PATHS = {
-    "CHALLENGER": "challengerleagues",
-    "GRANDMASTER": "grandmasterleagues",
-    "MASTER": "masterleagues",
-}
 
 
 @dataclass(slots=True)
@@ -55,81 +48,6 @@ class RiotClient:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
-
-    async def fetch_ladder_page(
-        self,
-        queue: str,
-        tier: str,
-        division: str | None = None,
-        page: int | None = None,
-        platform_route: str = DEFAULT_OCE_PLATFORM_ROUTE,
-    ) -> list[LeagueEntry]:
-        apex_path = APEX_TIER_PATHS.get(tier.upper())
-        if apex_path is not None:
-            data = await self.get_league_v4(
-                f"/lol/league/v4/{apex_path}/by-queue/{queue}",
-                platform_route=platform_route,
-            )
-            if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
-                msg = "Riot apex ladder response did not contain an entries list."
-                raise RiotApiError(msg)
-            return [LeagueEntry.model_validate(entry) for entry in data["entries"]]
-
-        if not division:
-            msg = "division is required for non-apex ranked ladder tiers."
-            raise RiotApiError(msg)
-
-        data = await self.get_league_v4(
-            f"/lol/league/v4/entries/{queue}/{tier}/{division}",
-            platform_route=platform_route,
-            params={"page": page or 1},
-        )
-        if not isinstance(data, list):
-            msg = "Riot ladder response was not a list."
-            raise RiotApiError(msg)
-        return [LeagueEntry.model_validate(entry) for entry in data]
-
-    async def fetch_match_ids_by_puuid(
-        self,
-        puuid: str,
-        start: int = 0,
-        count: int = 20,
-        regional_route: str = DEFAULT_OCE_REGIONAL_ROUTE,
-        start_time: int | None = None,
-        end_time: int | None = None,
-        queue: int | None = None,
-        match_type: str | None = None,
-    ) -> list[str]:
-        data = await self.get_match_v5(
-            f"/lol/match/v5/matches/by-puuid/{puuid}/ids",
-            regional_route=regional_route,
-            params={
-                "startTime": start_time,
-                "endTime": end_time,
-                "queue": queue,
-                "type": match_type,
-                "start": start,
-                "count": count,
-            },
-        )
-        if not isinstance(data, list) or not all(isinstance(match_id, str) for match_id in data):
-            msg = "Riot match history response was not a list of match IDs."
-            raise RiotApiError(msg)
-        return data
-
-    async def fetch_match_by_id(
-        self,
-        match_id: str,
-        regional_route: str = DEFAULT_OCE_REGIONAL_ROUTE,
-    ) -> dict[str, Any]:
-        data = await self.get_match_v5(
-            f"/lol/match/v5/matches/{match_id}",
-            regional_route=regional_route,
-        )
-        if not isinstance(data, dict):
-            msg = "Riot match detail response was not an object."
-            raise RiotApiError(msg)
-        return data
 
     async def get_match_v5(
         self,

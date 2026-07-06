@@ -50,15 +50,17 @@ async def get_match_ids_by_puuid(
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
-            return await riot_client.fetch_match_ids_by_puuid(
-                puuid=puuid,
+            return await riot_client.get_match_v5(
+                f"/lol/match/v5/matches/by-puuid/{puuid}/ids",
                 regional_route=regional_route,
-                start_time=start_time,
-                end_time=end_time,
-                queue=queue,
-                match_type=match_type,
-                start=start,
-                count=count,
+                params={
+                    "startTime": start_time,
+                    "endTime": end_time,
+                    "queue": queue,
+                    "type": match_type,
+                    "start": start,
+                    "count": count,
+                },
             )
 
     return await call_riot(operation)
@@ -96,8 +98,8 @@ async def get_match(
 ) -> Any:
     async def operation() -> Any:
         async with riot_client:
-            return await riot_client.fetch_match_by_id(
-                match_id=match_id,
+            return await riot_client.get_match_v5(
+                f"/lol/match/v5/matches/{match_id}",
                 regional_route=regional_route,
             )
 

@@ -89,7 +89,8 @@ Keep changes focused and easy to review. Include tests for new behavior, update 
 
 Do not commit `.env` or real Riot API keys. Use `.env.example` for documented defaults and keep local secrets in `.env`.
 
-## Future Implementation Stages
+## Current Scope
 
-Planned stages include database models, Alembic migrations, persisted
-deduplication by `match_id`, and background worker orchestration.
+Keep the project focused on the GET-only Match-V5 and League-V4 mirror routes.
+Avoid adding ingestion, persistence, or worker code until those behaviors are
+part of an explicit next stage.

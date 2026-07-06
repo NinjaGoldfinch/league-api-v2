@@ -22,46 +22,6 @@ class FakeRiotClient:
     ) -> None:
         return None
 
-    async def fetch_match_ids_by_puuid(
-        self,
-        puuid: str,
-        start: int = 0,
-        count: int = 20,
-        regional_route: str = "sea",
-        start_time: int | None = None,
-        end_time: int | None = None,
-        queue: int | None = None,
-        match_type: str | None = None,
-    ) -> list[str]:
-        self.calls.append(
-            {
-                "method": "fetch_match_ids_by_puuid",
-                "puuid": puuid,
-                "regional_route": regional_route,
-                "startTime": start_time,
-                "endTime": end_time,
-                "queue": queue,
-                "type": match_type,
-                "start": start,
-                "count": count,
-            }
-        )
-        return ["OC1_1"]
-
-    async def fetch_match_by_id(
-        self,
-        match_id: str,
-        regional_route: str = "sea",
-    ) -> dict[str, Any]:
-        self.calls.append(
-            {
-                "method": "fetch_match_by_id",
-                "match_id": match_id,
-                "regional_route": regional_route,
-            }
-        )
-        return {"metadata": {"matchId": match_id}}
-
     async def get_match_v5(
         self,
         path: str,
@@ -77,6 +37,8 @@ class FakeRiotClient:
                 "params": params,
             }
         )
+        if path.endswith("/ids"):
+            return {"path": path, "matchIds": ["OC1_1"]}
         return {"path": path}
 
     async def get_league_v4(
@@ -118,18 +80,23 @@ def test_match_ids_route_forwards_all_query_flags() -> None:
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json() == ["OC1_1"]
+    assert response.json() == {
+        "path": "/lol/match/v5/matches/by-puuid/player-1/ids",
+        "matchIds": ["OC1_1"],
+    }
     assert fake_client.calls == [
         {
-            "method": "fetch_match_ids_by_puuid",
-            "puuid": "player-1",
+            "method": "get_match_v5",
+            "path": "/lol/match/v5/matches/by-puuid/player-1/ids",
             "regional_route": "SEA",
-            "startTime": 1710000000,
-            "endTime": 1710003600,
-            "queue": 420,
-            "type": "ranked",
-            "start": 5,
-            "count": 100,
+            "params": {
+                "startTime": 1710000000,
+                "endTime": 1710003600,
+                "queue": 420,
+                "type": "ranked",
+                "start": 5,
+                "count": 100,
+            },
         }
     ]
 
@@ -159,9 +126,10 @@ def test_match_detail_and_timeline_routes_mirror_match_v5_paths() -> None:
     assert replay_response.status_code == 200
     assert fake_client.calls == [
         {
-            "method": "fetch_match_by_id",
-            "match_id": "OC1_1",
+            "method": "get_match_v5",
+            "path": "/lol/match/v5/matches/OC1_1",
             "regional_route": "SEA",
+            "params": None,
         },
         {
             "method": "get_match_v5",
