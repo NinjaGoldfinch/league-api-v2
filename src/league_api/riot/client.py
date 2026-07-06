@@ -8,13 +8,25 @@ from typing import Any
 import httpx
 
 from league_api.core.config import Settings, get_settings
-from league_api.riot.errors import RiotApiError, RiotConfigurationError, RiotRateLimitError
-from league_api.riot.rate_limiter import RiotRateLimitManager, get_riot_rate_limiter
+from league_api.riot.errors import (
+    RiotApiError,
+    RiotConfigurationError,
+    RiotRateLimitError,
+    RiotRateLimitWouldWaitError,
+)
+from league_api.riot.rate_limiter import (
+    RiotRateLimitAudience,
+    RiotRateLimitManager,
+    get_riot_rate_limiter,
+)
 from league_api.riot.routing import (
+    DEFAULT_ACCOUNT_REGIONAL_ROUTE,
     DEFAULT_OCE_PLATFORM_ROUTE,
     DEFAULT_OCE_REGIONAL_ROUTE,
+    RiotAccountRegionalRoute,
     RiotPlatformRoute,
     RiotRegionalRoute,
+    get_account_regional_base_url,
     get_platform_base_url,
     get_regional_base_url,
 )
@@ -42,7 +54,7 @@ class RiotRequestEvent:
 
 @dataclass(slots=True)
 class RiotClient:
-    """Async Riot API client for Match-V5 and League-V4 mirror routes."""
+    """Async Riot API client for mirrored Riot API routes."""
 
     api_key: str | None
     platform_route: str = DEFAULT_OCE_PLATFORM_ROUTE
@@ -93,11 +105,32 @@ class RiotClient:
         *,
         regional_route: str | RiotRegionalRoute = DEFAULT_OCE_REGIONAL_ROUTE,
         params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
     ) -> Any:
         return await self._get_json(
             get_regional_base_url(regional_route),
             path,
             params=params,
+            rate_limit_audience=rate_limit_audience,
+            wait_for_rate_limit=wait_for_rate_limit,
+        )
+
+    async def get_account_v1(
+        self,
+        path: str,
+        *,
+        regional_route: str | RiotAccountRegionalRoute = DEFAULT_ACCOUNT_REGIONAL_ROUTE,
+        params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
+    ) -> Any:
+        return await self._get_json(
+            get_account_regional_base_url(regional_route),
+            path,
+            params=params,
+            rate_limit_audience=rate_limit_audience,
+            wait_for_rate_limit=wait_for_rate_limit,
         )
 
     async def get_league_v4(
@@ -106,11 +139,32 @@ class RiotClient:
         *,
         platform_route: str | RiotPlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
         params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
     ) -> Any:
         return await self._get_json(
             get_platform_base_url(platform_route),
             path,
             params=params,
+            rate_limit_audience=rate_limit_audience,
+            wait_for_rate_limit=wait_for_rate_limit,
+        )
+
+    async def get_summoner_v4(
+        self,
+        path: str,
+        *,
+        platform_route: str | RiotPlatformRoute = DEFAULT_OCE_PLATFORM_ROUTE,
+        params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
+    ) -> Any:
+        return await self._get_json(
+            get_platform_base_url(platform_route),
+            path,
+            params=params,
+            rate_limit_audience=rate_limit_audience,
+            wait_for_rate_limit=wait_for_rate_limit,
         )
 
     async def _get_json(
@@ -119,6 +173,8 @@ class RiotClient:
         path: str,
         *,
         params: dict[str, int | str | None] | None = None,
+        rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        wait_for_rate_limit: bool = True,
     ) -> Any:
         if not self.api_key:
             msg = "RIOT_API_KEY is required before calling the Riot API."
@@ -149,7 +205,18 @@ class RiotClient:
                 )
 
             if self.rate_limiter is not None:
-                await self.rate_limiter.acquire(on_wait=emit_budget_wait)
+                if wait_for_rate_limit:
+                    await self.rate_limiter.acquire(
+                        audience=rate_limit_audience,
+                        on_wait=emit_budget_wait,
+                    )
+                else:
+                    acquired, wait_seconds = self.rate_limiter.try_acquire(
+                        audience=rate_limit_audience
+                    )
+                    if not acquired:
+                        msg = "Riot request would wait for rate-limit capacity."
+                        raise RiotRateLimitWouldWaitError(msg, wait_seconds=wait_seconds)
 
             await self._emit_event(
                 RiotRequestEvent(

@@ -5,13 +5,13 @@ from uuid import uuid4
 from league_api.jobs.models import (
     JobError,
     JobEvent,
+    JobParams,
     JobProgress,
     JobRecord,
+    JobResult,
     JobStatus,
     JobType,
     JobWait,
-    LadderIngestionParams,
-    LadderIngestionResult,
 )
 
 
@@ -26,7 +26,7 @@ class InMemoryJobStore:
         self,
         *,
         job_type: JobType,
-        params: LadderIngestionParams,
+        params: JobParams,
     ) -> JobRecord:
         now = datetime.now(UTC)
         job = JobRecord(
@@ -73,7 +73,7 @@ class InMemoryJobStore:
         self,
         job_id: str,
         *,
-        result: LadderIngestionResult,
+        result: JobResult,
     ) -> JobRecord:
         async with self._lock:
             job = self._require_job(job_id)

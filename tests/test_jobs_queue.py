@@ -8,8 +8,14 @@ from league_api.jobs.models import (
     JobType,
     LadderIngestionParams,
     LadderIngestionResult,
+    ProfileFetchParams,
+    ProfileFetchResult,
 )
-from league_api.jobs.queue import InMemoryJobQueue
+from league_api.jobs.queue import (
+    LADDER_INGESTION_PRIORITY,
+    PROFILE_FETCH_PRIORITY,
+    InMemoryJobQueue,
+)
 from league_api.jobs.store import InMemoryJobStore
 from league_api.riot.rate_limiter import RiotRateLimit, RiotRateLimitManager
 
@@ -37,7 +43,11 @@ async def test_queue_processes_job_asynchronously() -> None:
             matches={},
         )
 
-    queue = InMemoryJobQueue(store=store, ladder_ingestion_handler=handler)
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=handler,
+        profile_fetch_handler=_unexpected_profile_handler,
+    )
     queue.start()
     try:
         job = await store.create_job(
@@ -56,6 +66,7 @@ async def test_queue_processes_job_asynchronously() -> None:
         succeeded_job = await store.get_job(job.job_id)
         assert succeeded_job is not None
         assert succeeded_job.result is not None
+        assert isinstance(succeeded_job.result, LadderIngestionResult)
         assert succeeded_job.result.player_puuids == ["puuid-1"]
     finally:
         await queue.stop()
@@ -83,7 +94,11 @@ async def test_queue_marks_failed_job_and_continues_processing() -> None:
             matches={},
         )
 
-    queue = InMemoryJobQueue(store=store, ladder_ingestion_handler=handler)
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=handler,
+        profile_fetch_handler=_unexpected_profile_handler,
+    )
     queue.start()
     try:
         failed_job = await store.create_job(
@@ -144,7 +159,11 @@ async def test_queue_stop_cancels_job_waiting_for_rate_limit() -> None:
             matches={},
         )
 
-    queue = InMemoryJobQueue(store=store, ladder_ingestion_handler=handler)
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=handler,
+        profile_fetch_handler=_unexpected_profile_handler,
+    )
     queue.start()
     job = await store.create_job(
         job_type=JobType.LADDER_INGESTION,
@@ -183,7 +202,11 @@ async def test_queue_stop_marks_pending_jobs_failed() -> None:
             matches={},
         )
 
-    queue = InMemoryJobQueue(store=store, ladder_ingestion_handler=handler)
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=handler,
+        profile_fetch_handler=_unexpected_profile_handler,
+    )
     queue.start()
     running_job = await store.create_job(
         job_type=JobType.LADDER_INGESTION,
@@ -209,6 +232,109 @@ async def test_queue_stop_marks_pending_jobs_failed() -> None:
     assert failed_pending_job.error.error_type == "CancelledError"
 
 
+@pytest.mark.asyncio
+async def test_priority_queue_runs_profile_jobs_before_ladder_jobs() -> None:
+    store = InMemoryJobStore()
+    processed: list[str] = []
+
+    async def ladder_handler(
+        params: LadderIngestionParams,
+        store_arg: InMemoryJobStore,
+        job_id: str,
+    ) -> LadderIngestionResult:
+        processed.append(f"ladder:{job_id}")
+        return LadderIngestionResult(
+            summary=JobProgress(players_discovered=1, players_processed=1),
+            player_puuids=["puuid-1"],
+            match_ids=[],
+            matches={},
+        )
+
+    async def profile_handler(
+        params: ProfileFetchParams,
+        store_arg: InMemoryJobStore,
+        job_id: str,
+    ) -> ProfileFetchResult:
+        processed.append(f"profile:{job_id}")
+        return ProfileFetchResult(
+            summary=JobProgress(players_discovered=1, players_processed=1),
+            account={"puuid": "puuid-1"},
+            summoner={"puuid": "puuid-1"},
+            match_ids=[],
+            matches={},
+        )
+
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=ladder_handler,
+        profile_fetch_handler=profile_handler,
+    )
+    ladder_job = await store.create_job(
+        job_type=JobType.LADDER_INGESTION,
+        params=LadderIngestionParams(),
+    )
+    profile_job = await store.create_job(
+        job_type=JobType.PROFILE_FETCH,
+        params=ProfileFetchParams(game_name="GameName", tag_line="OCE"),
+    )
+    await queue.enqueue(ladder_job.job_id, priority=LADDER_INGESTION_PRIORITY)
+    await queue.enqueue(profile_job.job_id, priority=PROFILE_FETCH_PRIORITY)
+
+    queue.start()
+    try:
+        await _wait_for_status(store, ladder_job.job_id, JobStatus.SUCCEEDED)
+        await _wait_for_status(store, profile_job.job_id, JobStatus.SUCCEEDED)
+    finally:
+        await queue.stop()
+
+    assert processed == [f"profile:{profile_job.job_id}", f"ladder:{ladder_job.job_id}"]
+
+
+@pytest.mark.asyncio
+async def test_priority_queue_preserves_fifo_order_inside_same_priority() -> None:
+    store = InMemoryJobStore()
+    processed: list[str] = []
+
+    async def profile_handler(
+        params: ProfileFetchParams,
+        store_arg: InMemoryJobStore,
+        job_id: str,
+    ) -> ProfileFetchResult:
+        processed.append(job_id)
+        return ProfileFetchResult(
+            summary=JobProgress(players_discovered=1, players_processed=1),
+            account={"puuid": "puuid-1"},
+            summoner={"puuid": "puuid-1"},
+            match_ids=[],
+            matches={},
+        )
+
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=_unexpected_ladder_handler,
+        profile_fetch_handler=profile_handler,
+    )
+    first_job = await store.create_job(
+        job_type=JobType.PROFILE_FETCH,
+        params=ProfileFetchParams(game_name="First", tag_line="OCE"),
+    )
+    second_job = await store.create_job(
+        job_type=JobType.PROFILE_FETCH,
+        params=ProfileFetchParams(game_name="Second", tag_line="OCE"),
+    )
+    await queue.enqueue(first_job.job_id, priority=PROFILE_FETCH_PRIORITY)
+    await queue.enqueue(second_job.job_id, priority=PROFILE_FETCH_PRIORITY)
+
+    queue.start()
+    try:
+        await _wait_for_status(store, first_job.job_id, JobStatus.SUCCEEDED)
+        await _wait_for_status(store, second_job.job_id, JobStatus.SUCCEEDED)
+    finally:
+        await queue.stop()
+
+    assert processed == [first_job.job_id, second_job.job_id]
+
+
 async def _wait_for_status(
     store: InMemoryJobStore,
     job_id: str,
@@ -221,3 +347,19 @@ async def _wait_for_status(
         await asyncio.sleep(0.01)
     msg = f"Job {job_id} did not reach {expected_status}."
     raise AssertionError(msg)
+
+
+async def _unexpected_ladder_handler(
+    params: LadderIngestionParams,
+    store_arg: InMemoryJobStore,
+    job_id: str,
+) -> LadderIngestionResult:
+    raise AssertionError("Ladder handler should not be called in this test.")
+
+
+async def _unexpected_profile_handler(
+    params: ProfileFetchParams,
+    store_arg: InMemoryJobStore,
+    job_id: str,
+) -> ProfileFetchResult:
+    raise AssertionError("Profile handler should not be called in this test.")

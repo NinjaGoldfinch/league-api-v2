@@ -47,6 +47,17 @@ class Settings(BaseSettings):
         ge=0.0,
         alias="RIOT_RATE_LIMIT_RETRY_AFTER_FALLBACK_SECONDS",
     )
+    riot_manual_rate_limit_reserve_fraction: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        alias="RIOT_MANUAL_RATE_LIMIT_RESERVE_FRACTION",
+    )
+    riot_manual_rate_limit_unlock_seconds: float = Field(
+        default=10.0,
+        ge=0.0,
+        alias="RIOT_MANUAL_RATE_LIMIT_UNLOCK_SECONDS",
+    )
     riot_request_logs_enabled: bool = Field(
         default=True,
         alias="RIOT_REQUEST_LOGS_ENABLED",

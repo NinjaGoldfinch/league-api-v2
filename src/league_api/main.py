@@ -3,11 +3,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from league_api.api.routes.account_v1 import router as account_v1_router
 from league_api.api.routes.jobs import router as jobs_router
 from league_api.api.routes.league_v4 import router as league_v4_router
 from league_api.api.routes.match_v5 import router as match_v5_router
+from league_api.api.routes.profiles import router as profiles_router
+from league_api.api.routes.summoner_v4 import router as summoner_v4_router
 from league_api.core.config import get_settings
 from league_api.jobs.ingestion import run_ladder_ingestion
+from league_api.jobs.profile import run_profile_fetch
 from league_api.jobs.queue import InMemoryJobQueue
 from league_api.jobs.store import InMemoryJobStore
 
@@ -19,6 +23,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     job_queue = InMemoryJobQueue(
         store=job_store,
         ladder_ingestion_handler=run_ladder_ingestion,
+        profile_fetch_handler=run_profile_fetch,
     )
     app.state.job_store = job_store
     app.state.job_queue = job_queue
@@ -34,8 +39,11 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.include_router(jobs_router)
+    app.include_router(account_v1_router)
     app.include_router(match_v5_router)
     app.include_router(league_v4_router)
+    app.include_router(summoner_v4_router)
+    app.include_router(profiles_router)
     return app
 
 

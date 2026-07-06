@@ -1,4 +1,5 @@
 import asyncio
+import math
 import threading
 import time
 from collections import deque
@@ -6,10 +7,16 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from enum import StrEnum
 
 from league_api.core.config import Settings
 
 RateLimitWaitCallback = Callable[[float], Awaitable[None]]
+
+
+class RiotRateLimitAudience(StrEnum):
+    MANUAL = "manual"
+    AUTOMATIC = "automatic"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +25,12 @@ class RiotRateLimit:
 
     request_count: int
     window_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class RiotRateLimitReservation:
+    occurred_at: float
+    audience: RiotRateLimitAudience
 
 
 class RiotRateLimitManager:
@@ -30,6 +43,8 @@ class RiotRateLimitManager:
         max_retries: int,
         retry_after_buffer_seconds: float,
         retry_after_fallback_seconds: float,
+        manual_reserve_fraction: float = 0.0,
+        manual_reserve_unlock_seconds: float = 10.0,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -38,10 +53,12 @@ class RiotRateLimitManager:
             raise ValueError(msg)
 
         self._limits = list(limits)
-        self._windows = [(limit, deque[float]()) for limit in self._limits]
+        self._windows = [(limit, deque[RiotRateLimitReservation]()) for limit in self._limits]
         self._max_retries = max_retries
         self._retry_after_buffer_seconds = retry_after_buffer_seconds
         self._retry_after_fallback_seconds = retry_after_fallback_seconds
+        self._manual_reserve_fraction = manual_reserve_fraction
+        self._manual_reserve_unlock_seconds = manual_reserve_unlock_seconds
         self._monotonic = monotonic
         self._sleep = sleep
         self._blocked_until = 0.0
@@ -58,16 +75,31 @@ class RiotRateLimitManager:
             for limit in self._limits
         )
 
-    async def acquire(self, *, on_wait: RateLimitWaitCallback | None = None) -> None:
+    async def acquire(
+        self,
+        *,
+        audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+        on_wait: RateLimitWaitCallback | None = None,
+    ) -> None:
         """Reserve one Riot request slot, waiting until all windows have capacity."""
 
         while True:
-            delay = self._reserve_or_delay()
+            delay = self._reserve_or_delay(audience)
             if delay <= 0:
                 return
             if on_wait is not None:
                 await on_wait(delay)
             await self._sleep(delay)
+
+    def try_acquire(
+        self,
+        *,
+        audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
+    ) -> tuple[bool, float]:
+        """Try to reserve one Riot request slot without sleeping."""
+
+        delay = self._reserve_or_delay(audience)
+        return delay <= 0, max(delay, 0.0)
 
     async def pause_for_retry_after(
         self,
@@ -88,7 +120,7 @@ class RiotRateLimitManager:
             await on_wait(delay)
         await self._sleep(delay)
 
-    def _reserve_or_delay(self) -> float:
+    def _reserve_or_delay(self, audience: RiotRateLimitAudience) -> float:
         now = self._monotonic()
         with self._lock:
             blocked_delay = self._blocked_until - now
@@ -98,19 +130,49 @@ class RiotRateLimitManager:
             wait_until = now
             for limit, timestamps in self._windows:
                 cutoff = now - limit.window_seconds
-                while timestamps and timestamps[0] <= cutoff:
+                while timestamps and timestamps[0].occurred_at <= cutoff:
                     timestamps.popleft()
 
                 if len(timestamps) >= limit.request_count:
-                    wait_until = max(wait_until, timestamps[0] + limit.window_seconds)
+                    wait_until = max(wait_until, timestamps[0].occurred_at + limit.window_seconds)
+                    continue
+
+                if audience is RiotRateLimitAudience.AUTOMATIC:
+                    automatic_capacity = self._automatic_capacity(limit)
+                    if len(
+                        timestamps
+                    ) >= automatic_capacity and not self._automatic_reserve_unlocked(
+                        limit, timestamps, now
+                    ):
+                        wait_until = max(
+                            wait_until,
+                            timestamps[0].occurred_at
+                            + limit.window_seconds
+                            - self._manual_reserve_unlock_seconds,
+                        )
 
             delay = wait_until - now
             if delay > 0:
                 return delay
 
             for _, timestamps in self._windows:
-                timestamps.append(now)
+                timestamps.append(RiotRateLimitReservation(now, audience))
             return 0.0
+
+    def _automatic_capacity(self, limit: RiotRateLimit) -> int:
+        reserved_count = math.ceil(limit.request_count * self._manual_reserve_fraction)
+        return max(limit.request_count - reserved_count, 0)
+
+    def _automatic_reserve_unlocked(
+        self,
+        limit: RiotRateLimit,
+        timestamps: deque[RiotRateLimitReservation],
+        now: float,
+    ) -> bool:
+        if not timestamps:
+            return False
+        seconds_until_oldest_expires = timestamps[0].occurred_at + limit.window_seconds - now
+        return seconds_until_oldest_expires <= self._manual_reserve_unlock_seconds
 
     def _retry_after_delay(self, retry_after: str | None) -> float:
         retry_after_seconds = self._parse_retry_after(retry_after)
@@ -139,7 +201,9 @@ class RiotRateLimitManager:
 
 _shared_rate_limiter_lock = threading.Lock()
 _shared_rate_limiter: RiotRateLimitManager | None = None
-_shared_rate_limiter_signature: tuple[int, float, int, float, int, float, float] | None = None
+_shared_rate_limiter_signature: (
+    tuple[int, float, int, float, int, float, float, float, float] | None
+) = None
 
 
 def get_riot_rate_limiter(settings: Settings) -> RiotRateLimitManager:
@@ -155,6 +219,8 @@ def get_riot_rate_limiter(settings: Settings) -> RiotRateLimitManager:
         settings.riot_rate_limit_max_retries,
         settings.riot_rate_limit_retry_after_buffer_seconds,
         settings.riot_rate_limit_retry_after_fallback_seconds,
+        settings.riot_manual_rate_limit_reserve_fraction,
+        settings.riot_manual_rate_limit_unlock_seconds,
     )
 
     with _shared_rate_limiter_lock:
@@ -173,6 +239,8 @@ def get_riot_rate_limiter(settings: Settings) -> RiotRateLimitManager:
                 max_retries=settings.riot_rate_limit_max_retries,
                 retry_after_buffer_seconds=settings.riot_rate_limit_retry_after_buffer_seconds,
                 retry_after_fallback_seconds=settings.riot_rate_limit_retry_after_fallback_seconds,
+                manual_reserve_fraction=settings.riot_manual_rate_limit_reserve_fraction,
+                manual_reserve_unlock_seconds=settings.riot_manual_rate_limit_unlock_seconds,
             )
             _shared_rate_limiter_signature = signature
 

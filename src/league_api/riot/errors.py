@@ -15,5 +15,13 @@ class RiotRateLimitError(RiotApiError):
         self.retry_after = retry_after
 
 
+class RiotRateLimitWouldWaitError(RiotRateLimitError):
+    """Raised when a non-blocking Riot request would need to wait for capacity."""
+
+    def __init__(self, message: str, *, wait_seconds: float) -> None:
+        super().__init__(message)
+        self.wait_seconds = wait_seconds
+
+
 class RiotConfigurationError(RiotApiError):
     """Raised when Riot client configuration is incomplete."""

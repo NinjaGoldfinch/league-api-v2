@@ -64,6 +64,15 @@ print(re.sub(r"[^A-Za-z0-9_.-]+", "_", sys.argv[1]).strip("_") or "request")
 PY
 }
 
+url_path_segment() {
+  python3 - "$1" <<'PY'
+from urllib.parse import quote
+import sys
+
+print(quote(sys.argv[1], safe=""))
+PY
+}
+
 contains_status() {
   local expected_csv="$1"
   local actual="$2"

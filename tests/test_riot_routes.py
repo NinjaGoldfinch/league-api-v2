@@ -41,6 +41,23 @@ class FakeRiotClient:
             return {"path": path, "matchIds": ["OC1_1"]}
         return {"path": path}
 
+    async def get_account_v1(
+        self,
+        path: str,
+        *,
+        regional_route: str = "sea",
+        params: dict[str, int | str | None] | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "method": "get_account_v1",
+                "path": path,
+                "regional_route": regional_route,
+                "params": params,
+            }
+        )
+        return {"path": path}
+
     async def get_league_v4(
         self,
         path: str,
@@ -57,6 +74,68 @@ class FakeRiotClient:
             }
         )
         return {"path": path}
+
+    async def get_summoner_v4(
+        self,
+        path: str,
+        *,
+        platform_route: str = "oc1",
+        params: dict[str, int | str | None] | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "method": "get_summoner_v4",
+                "path": path,
+                "platform_route": platform_route,
+                "params": params,
+            }
+        )
+        return {"path": path}
+
+
+def test_account_v1_routes_mirror_paths() -> None:
+    fake_client = FakeRiotClient()
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_client)
+    try:
+        with TestClient(app) as test_client:
+            responses = [
+                test_client.get(
+                    "/riot/account/v1/accounts/by-puuid/player-1",
+                    params={"regional_route": "ASIA"},
+                ),
+                test_client.get(
+                    "/riot/account/v1/accounts/by-riot-id/GameName/OCE",
+                    params={"regional_route": "ASIA"},
+                ),
+                test_client.get(
+                    "/riot/account/v1/active-shards/by-game/lol/by-puuid/player-1",
+                    params={"regional_route": "ASIA"},
+                ),
+            ]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert fake_client.calls == [
+        {
+            "method": "get_account_v1",
+            "path": "/riot/account/v1/accounts/by-puuid/player-1",
+            "regional_route": "asia",
+            "params": None,
+        },
+        {
+            "method": "get_account_v1",
+            "path": "/riot/account/v1/accounts/by-riot-id/GameName/OCE",
+            "regional_route": "asia",
+            "params": None,
+        },
+        {
+            "method": "get_account_v1",
+            "path": "/riot/account/v1/active-shards/by-game/lol/by-puuid/player-1",
+            "regional_route": "asia",
+            "params": None,
+        },
+    ]
 
 
 def test_match_ids_route_forwards_all_query_flags() -> None:
@@ -211,6 +290,29 @@ def test_league_v4_routes_mirror_paths_and_page_flag() -> None:
     ]
 
 
+def test_summoner_v4_routes_mirror_paths() -> None:
+    fake_client = FakeRiotClient()
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_client)
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.get(
+                "/lol/summoner/v4/summoners/by-puuid/player-1",
+                params={"platform_route": "OC1"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert fake_client.calls == [
+        {
+            "method": "get_summoner_v4",
+            "path": "/lol/summoner/v4/summoners/by-puuid/player-1",
+            "platform_route": "oc1",
+            "params": None,
+        }
+    ]
+
+
 def test_mirror_endpoints_are_get_only_and_documented() -> None:
     with TestClient(app) as test_client:
         post_response = test_client.post("/lol/match/v5/matches/OC1_1")
@@ -221,6 +323,8 @@ def test_mirror_endpoints_are_get_only_and_documented() -> None:
     assert not any(path.startswith("/ingestion") for path in openapi["paths"])
     assert set(openapi["paths"]["/lol/match/v5/matches/{matchId}"]) == {"get"}
     assert set(openapi["paths"]["/lol/league/v4/entries/{queue}/{tier}/{division}"]) == {"get"}
+    assert set(openapi["paths"]["/riot/account/v1/accounts/by-puuid/{puuid}"]) == {"get"}
+    assert set(openapi["paths"]["/lol/summoner/v4/summoners/by-puuid/{encryptedPUUID}"]) == {"get"}
     assert "startTime" in {
         parameter["name"]
         for parameter in openapi["paths"]["/lol/match/v5/matches/by-puuid/{puuid}/ids"]["get"][
@@ -245,6 +349,38 @@ def test_match_v5_rejects_non_riot_regional_route_before_calling_client() -> Non
     assert fake_client.calls == []
 
 
+def test_account_v1_rejects_non_riot_regional_route_before_calling_client() -> None:
+    fake_client = FakeRiotClient()
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_client)
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.get(
+                "/riot/account/v1/accounts/by-puuid/player-1",
+                params={"regional_route": "attacker.example/anything"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert fake_client.calls == []
+
+
+def test_account_v1_rejects_match_v5_sea_route_before_calling_client() -> None:
+    fake_client = FakeRiotClient()
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_client)
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.get(
+                "/riot/account/v1/accounts/by-puuid/player-1",
+                params={"regional_route": "SEA"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert fake_client.calls == []
+
+
 def test_league_v4_rejects_non_riot_platform_route_before_calling_client() -> None:
     fake_client = FakeRiotClient()
     app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_client)
@@ -252,6 +388,22 @@ def test_league_v4_rejects_non_riot_platform_route_before_calling_client() -> No
         with TestClient(app) as test_client:
             response = test_client.get(
                 "/lol/league/v4/masterleagues/by-queue/RANKED_SOLO_5x5",
+                params={"platform_route": "attacker.example/anything"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert fake_client.calls == []
+
+
+def test_summoner_v4_rejects_non_riot_platform_route_before_calling_client() -> None:
+    fake_client = FakeRiotClient()
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_client)
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.get(
+                "/lol/summoner/v4/summoners/by-puuid/player-1",
                 params={"platform_route": "attacker.example/anything"},
             )
     finally:
