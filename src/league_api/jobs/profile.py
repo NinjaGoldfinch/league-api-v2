@@ -9,7 +9,7 @@ from league_api.jobs.models import (
     ProfileFetchParams,
     ProfileFetchResult,
 )
-from league_api.jobs.store import InMemoryJobStore
+from league_api.jobs.store import JobStore
 from league_api.riot.client import RiotClient, RiotRequestEventHandler
 from league_api.riot.rate_limiter import RiotRateLimitAudience
 from league_api.riot.routing import RiotAccountRegionalRoute, RiotPlatformRoute, RiotRegionalRoute
@@ -75,7 +75,7 @@ def _default_profile_riot_client_factory(
 
 async def run_profile_fetch(
     params: ProfileFetchParams,
-    store: InMemoryJobStore,
+    store: JobStore,
     job_id: str,
     *,
     riot_client_factory: ProfileRiotClientFactory = _default_profile_riot_client_factory,

@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import uuid4
 
 from league_api.jobs.models import (
@@ -13,6 +14,42 @@ from league_api.jobs.models import (
     JobType,
     JobWait,
 )
+
+
+class JobStore(Protocol):
+    async def create_job(
+        self,
+        *,
+        job_type: JobType,
+        params: JobParams,
+    ) -> JobRecord: ...
+
+    async def get_job(self, job_id: str) -> JobRecord | None: ...
+
+    async def list_jobs(self, *, statuses: set[JobStatus] | None = None) -> list[JobRecord]: ...
+
+    async def mark_running(self, job_id: str) -> JobRecord: ...
+
+    async def update_progress(self, job_id: str, progress: JobProgress) -> JobRecord: ...
+
+    async def mark_succeeded(
+        self,
+        job_id: str,
+        *,
+        result: JobResult,
+    ) -> JobRecord: ...
+
+    async def mark_failed(self, job_id: str, *, error: JobError) -> JobRecord: ...
+
+    async def record_event(
+        self,
+        job_id: str,
+        event: JobEvent,
+        *,
+        current_wait: JobWait | None = None,
+        clear_current_wait: bool = False,
+        max_events: int = 100,
+    ) -> JobRecord: ...
 
 
 class InMemoryJobStore:

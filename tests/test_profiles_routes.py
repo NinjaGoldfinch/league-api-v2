@@ -13,6 +13,7 @@ from league_api.jobs.queue import (
 )
 from league_api.jobs.store import InMemoryJobStore
 from league_api.main import create_app
+from league_api.riot.cache import InMemoryRiotCacheStore, build_riot_cache_key
 from league_api.riot.client import RiotClient
 from league_api.riot.errors import RiotApiError, RiotRateLimitWouldWaitError
 from league_api.riot.rate_limiter import RiotRateLimitAudience
@@ -209,3 +210,119 @@ def test_fetch_profile_surfaces_riot_errors_before_queuing() -> None:
 
     assert response.status_code == 404
     assert fake_queue.enqueued == []
+
+
+def test_get_fetch_profile_returns_cached_profile_without_side_effects() -> None:
+    cache_store = InMemoryRiotCacheStore()
+    asyncio.run(
+        _put_cache_entry(
+            cache_store,
+            base_url="https://asia.api.riotgames.com",
+            path="/riot/account/v1/accounts/by-riot-id/GameName/OCE",
+            payload={"puuid": "puuid-1", "gameName": "GameName", "tagLine": "OCE"},
+        )
+    )
+    asyncio.run(
+        _put_cache_entry(
+            cache_store,
+            base_url="https://oc1.api.riotgames.com",
+            path="/lol/summoner/v4/summoners/by-puuid/puuid-1",
+            payload={"puuid": "puuid-1", "summonerLevel": 100},
+        )
+    )
+    asyncio.run(
+        _put_cache_entry(
+            cache_store,
+            base_url="https://sea.api.riotgames.com",
+            path="/lol/match/v5/matches/by-puuid/puuid-1/ids",
+            params={"start": 0, "count": 20},
+            payload=["OC1_1", "OC1_2"],
+        )
+    )
+    fake_queue = FakeJobQueue()
+    fake_riot_client = FakeRiotClient()
+    app = create_app()
+    app.dependency_overrides[get_job_queue] = lambda: cast(InMemoryJobQueue, fake_queue)
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_riot_client)
+
+    try:
+        with TestClient(app) as test_client:
+            app.state.riot_cache_store = cache_store
+            response = test_client.get("/profiles/fetch", params={"riot_id": "GameName#OCE"})
+            query_response = test_client.request(
+                "QUERY",
+                "/profiles/fetch",
+                json={
+                    "riot_id": "GameName#OCE",
+                    "account_regional_route": "asia",
+                    "platform_route": "oc1",
+                    "regional_route": "sea",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "identity_status": "cached",
+        "account": {"puuid": "puuid-1", "gameName": "GameName", "tagLine": "OCE"},
+        "summoner": {"puuid": "puuid-1", "summonerLevel": 100},
+        "match_ids": ["OC1_1", "OC1_2"],
+        "account_cache_status": "hit",
+        "summoner_cache_status": "hit",
+        "match_ids_cache_status": "hit",
+    }
+    assert response.headers["accept-query"] == '"application/json"'
+    assert query_response.status_code == 200
+    assert query_response.headers["accept-query"] == '"application/json"'
+    assert query_response.json() == body
+    assert fake_queue.enqueued == []
+    assert fake_riot_client.calls == []
+    assert len(cache_store._entries) == 3
+
+
+def test_get_fetch_profile_404s_when_profile_is_not_cached() -> None:
+    cache_store = InMemoryRiotCacheStore()
+    fake_queue = FakeJobQueue()
+    fake_riot_client = FakeRiotClient()
+    app = create_app()
+    app.dependency_overrides[get_job_queue] = lambda: cast(InMemoryJobQueue, fake_queue)
+    app.dependency_overrides[get_riot_client] = lambda: cast(RiotClient, fake_riot_client)
+
+    try:
+        with TestClient(app) as test_client:
+            app.state.riot_cache_store = cache_store
+            response = test_client.get("/profiles/fetch", params={"riot_id": "GameName#OCE"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Profile is not cached."
+    assert fake_queue.enqueued == []
+    assert fake_riot_client.calls == []
+    assert cache_store._entries == {}
+
+
+async def _put_cache_entry(
+    cache_store: InMemoryRiotCacheStore,
+    *,
+    base_url: str,
+    path: str,
+    payload: Any,
+    params: dict[str, int | str | None] | None = None,
+) -> None:
+    cache_key = build_riot_cache_key(
+        method="GET",
+        base_url=base_url,
+        path=path,
+        params=params,
+    )
+    await cache_store.put(
+        key=cache_key,
+        payload=payload,
+        status_code=200,
+        headers={},
+        ttl_seconds=3600,
+        stale_while_revalidate_seconds=300,
+    )

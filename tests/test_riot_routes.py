@@ -331,6 +331,11 @@ def test_mirror_endpoints_are_get_only_and_documented() -> None:
             "parameters"
         ]
     }
+    assert openapi["components"]["schemas"]["LeagueQueue"]["enum"] == [
+        "RANKED_SOLO_5x5",
+        "RANKED_FLEX_SR",
+        "RANKED_FLEX_TT",
+    ]
 
 
 def test_match_v5_rejects_non_riot_regional_route_before_calling_client() -> None:

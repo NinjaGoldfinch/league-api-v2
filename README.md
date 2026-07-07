@@ -5,9 +5,10 @@ Account-V1, Match-V5, League-V4, and Summoner-V4 GET endpoints. It keeps the
 local URL paths aligned with Riot's documented paths and adds a small routing
 query parameter for choosing the Riot upstream region or platform.
 
-The app also includes a process-local in-memory job system for early ingestion
-work. Job state is kept only inside the running FastAPI process and is lost when
-the process restarts.
+The app also includes a background job system for early ingestion work. It can
+run fully in memory for tests, or use PostgreSQL for durable job state and Riot
+response caching plus Redis for shared job locks and Riot rate-limit
+coordination.
 
 ## License
 
@@ -56,11 +57,34 @@ and rate-limit waits include the same limit label plus `resumes_at`.
 
 ## Run
 
+Start the full development stack with PostgreSQL, Redis, Adminer, RedisInsight,
+database migrations, and the API:
+
+```bash
+make compose
+```
+
+For local Python development with Docker-managed PostgreSQL and Redis:
+
+```bash
+make local
+```
+
+Adminer is available at `http://localhost:8080`, RedisInsight at
+`http://localhost:5540`, and the API at `http://localhost:8000`.
+
+To run only the API process yourself:
+
 ```bash
 uvicorn league_api.main:app --reload
 ```
 
 OpenAPI documentation is available at `GET /docs` and `GET /openapi.json`.
+Mirrored Riot responses expose cache metadata with `X-League-API-Cache` set to
+`miss`, `hit`, or `stale` when caching is enabled.
+First-party read endpoints can also advertise RFC 10008 `QUERY` support with
+`Accept-Query: "application/json"` when they accept structured JSON query
+bodies.
 
 ## Account-V1
 
@@ -156,8 +180,18 @@ capacity, the response includes `account`, `summoner`, and `match_ids`. If those
 calls would need to wait, the response includes a queued `job_id` to poll with
 `GET /jobs/{job_id}` or `GET /jobs/{job_id}/result`.
 
-Only `GET` is supported for mirrored Riot routes. There are no request bodies or
-custom `QUERY` method aliases.
+Cached profile reads support both the browser-friendly query-string form and an
+RFC 10008 `QUERY` form with a JSON body:
+
+```bash
+curl "http://localhost:8000/profiles/fetch?riot_id=GAME_NAME%23TAG_LINE&account_regional_route=asia&platform_route=oc1&regional_route=sea"
+curl -X QUERY "http://localhost:8000/profiles/fetch" \
+  -H "Content-Type: application/json" \
+  -d '{"riot_id":"GAME_NAME#TAG_LINE","account_regional_route":"asia","platform_route":"oc1","regional_route":"sea"}'
+```
+
+Only `GET` is supported for mirrored Riot routes, because those paths already
+map cleanly to Riot resources and simple query flags.
 
 ## Ingestion Jobs
 
@@ -178,6 +212,9 @@ List current job status:
 ```bash
 curl "http://localhost:8000/jobs/status"
 curl "http://localhost:8000/jobs/status?running_only=false&verbose=true&include_events=true&include_result=true"
+curl -X QUERY "http://localhost:8000/jobs/status" \
+  -H "Content-Type: application/json" \
+  -d '{"running_only":false,"verbose":true,"include_events":true,"include_result":true}'
 ```
 
 Job status responses include a `details` object with the Riot source, platform
@@ -202,6 +239,25 @@ Job status also includes `current_wait` when a Riot rate-limit pause is active.
 That object includes `resume_at`, `wait_seconds`, `reason`, and the Riot path
 being retried. The `events` list keeps recent Riot request activity, including
 request start, success, failure, and rate-limit wait events.
+
+## HTTP Method Model
+
+The API keeps `GET` for simple resource retrieval and browser/shareable URLs,
+uses RFC 10008 `QUERY` for safe structured reads with JSON request bodies, and
+keeps `POST` for operations that enqueue work or otherwise change local state.
+`POST /profiles/fetch` and `POST /jobs/ingestion/ladder` intentionally remain
+POST endpoints because they create background jobs.
+
+Browser clients on a separate origin must use CORS preflight for `QUERY`. Set
+`CORS_ALLOWED_ORIGINS` to a JSON array such as `["http://localhost:5173"]` to
+allow a frontend origin; the app then allows `GET`, `POST`, `QUERY`, and
+`OPTIONS`.
+
+A frontend API client should use `read(path, paramsOrBody, { autoRefresh })` for
+safe reads, choosing `QUERY` when the criteria are structured or used by polling
+dashboards, and `write(path, body)` for `POST` commands. Frontend page URLs can
+remain normal `GET` routes and translate to backend `QUERY` during server-side
+or loader-style data fetching.
 
 Fetch the final result:
 

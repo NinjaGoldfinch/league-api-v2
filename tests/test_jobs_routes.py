@@ -1,9 +1,11 @@
 import asyncio
 from typing import cast
 
+import pytest
 from fastapi.testclient import TestClient
 
 from league_api.api.routes.jobs import get_job_queue, get_job_store
+from league_api.core.config import get_settings
 from league_api.jobs.models import (
     JobError,
     JobEvent,
@@ -229,6 +231,16 @@ def test_list_job_status_verbose_flags_include_deeper_job_details() -> None:
             response = test_client.get(
                 "/jobs/status?running_only=false&verbose=true&include_events=true&include_result=true"
             )
+            query_response = test_client.request(
+                "QUERY",
+                "/jobs/status",
+                json={
+                    "running_only": False,
+                    "verbose": True,
+                    "include_events": True,
+                    "include_result": True,
+                },
+            )
     finally:
         app.dependency_overrides.clear()
 
@@ -245,6 +257,68 @@ def test_list_job_status_verbose_flags_include_deeper_job_details() -> None:
     assert body["jobs"][0]["last_event"]["stage"] == "match_ids"
     assert body["jobs"][0]["events"][0]["path"] == "/lol/match/v5/matches/by-puuid/puuid-1/ids"
     assert body["jobs"][0]["result"] is None
+
+    assert response.headers["accept-query"] == '"application/json"'
+    assert query_response.status_code == 200
+    assert query_response.headers["accept-query"] == '"application/json"'
+    query_body = query_response.json()
+    assert query_body.pop("generated_at")
+    assert body.pop("generated_at")
+    assert query_body == body
+
+
+def test_query_job_status_validates_query_json_contract() -> None:
+    app = create_app()
+
+    with TestClient(app) as test_client:
+        missing_content_type = test_client.request("QUERY", "/jobs/status", content=b"{}")
+        unsupported_content_type = test_client.request(
+            "QUERY",
+            "/jobs/status",
+            content=b"{}",
+            headers={"Content-Type": "text/plain"},
+        )
+        malformed_json = test_client.request(
+            "QUERY",
+            "/jobs/status",
+            content=b"{",
+            headers={"Content-Type": "application/json"},
+        )
+        validation_error = test_client.request(
+            "QUERY",
+            "/jobs/status",
+            json={"running_only": "not-a-bool"},
+        )
+
+    assert missing_content_type.status_code == 400
+    assert missing_content_type.headers["accept-query"] == '"application/json"'
+    assert unsupported_content_type.status_code == 415
+    assert unsupported_content_type.headers["accept-query"] == '"application/json"'
+    assert malformed_json.status_code == 422
+    assert malformed_json.headers["accept-query"] == '"application/json"'
+    assert validation_error.status_code == 422
+    assert validation_error.headers["accept-query"] == '"application/json"'
+
+
+def test_query_cors_preflight_allows_configured_frontend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", '["http://localhost:5173"]')
+    get_settings.cache_clear()
+    app = create_app()
+
+    with TestClient(app) as test_client:
+        response = test_client.options(
+            "/jobs/status",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "QUERY",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "QUERY" in response.headers["access-control-allow-methods"]
 
 
 def test_get_job_returns_rate_limit_wait_status_and_events() -> None:
@@ -398,3 +472,8 @@ def test_unknown_job_id_returns_404_and_openapi_includes_job_endpoints() -> None
     assert "/jobs/status" in openapi["paths"]
     assert "/jobs/{job_id}" in openapi["paths"]
     assert "/jobs/{job_id}/result" in openapi["paths"]
+    assert openapi["components"]["schemas"]["LeagueQueue"]["enum"] == [
+        "RANKED_SOLO_5x5",
+        "RANKED_FLEX_SR",
+        "RANKED_FLEX_TT",
+    ]

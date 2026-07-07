@@ -51,6 +51,14 @@ run_http \
   "200"
 
 run_http \
+  "jobs_status_query" \
+  "QUERY" \
+  "${BASE_URL}/jobs/status" \
+  "200" \
+  --header "Content-Type: application/json" \
+  --data '{"verbose":true}'
+
+run_http \
   "jobs_get_result_initial" \
   "GET" \
   "${BASE_URL}/jobs/${JOB_ID}/result" \

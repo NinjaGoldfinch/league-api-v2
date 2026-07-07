@@ -73,6 +73,60 @@ async def test_queue_processes_job_asynchronously() -> None:
 
 
 @pytest.mark.asyncio
+async def test_queue_skips_job_when_lock_is_already_owned() -> None:
+    store = InMemoryJobStore()
+    called = False
+
+    class LockedCoordinator:
+        async def acquire_job_lock(self, job_id: str, *, ttl_seconds: int = 900) -> str | None:
+            del job_id, ttl_seconds
+            return None
+
+        async def release_job_lock(self, job_id: str, token: str) -> None:
+            del job_id, token
+
+        async def close(self) -> None:
+            return None
+
+    async def handler(
+        params: LadderIngestionParams,
+        store_arg: InMemoryJobStore,
+        job_id: str,
+    ) -> LadderIngestionResult:
+        del params, store_arg, job_id
+        nonlocal called
+        called = True
+        return LadderIngestionResult(
+            summary=JobProgress(players_discovered=1, players_processed=1),
+            player_puuids=["puuid-1"],
+            match_ids=[],
+            matches={},
+        )
+
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=handler,
+        profile_fetch_handler=_unexpected_profile_handler,
+        lock_coordinator=LockedCoordinator(),
+    )
+    queue.start()
+    try:
+        job = await store.create_job(
+            job_type=JobType.LADDER_INGESTION,
+            params=LadderIngestionParams(),
+        )
+        await queue.enqueue(job.job_id)
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+        stored_job = await store.get_job(job.job_id)
+    finally:
+        await queue.stop()
+
+    assert not called
+    assert stored_job is not None
+    assert stored_job.status is JobStatus.QUEUED
+
+
+@pytest.mark.asyncio
 async def test_queue_marks_failed_job_and_continues_processing() -> None:
     store = InMemoryJobStore()
     calls = 0

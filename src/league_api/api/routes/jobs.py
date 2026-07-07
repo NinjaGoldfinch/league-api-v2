@@ -1,10 +1,11 @@
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict
 from starlette.responses import JSONResponse
 
+from league_api.api.query import add_accept_query_header, parse_query_json
 from league_api.core.config import Settings, get_settings
 from league_api.jobs.models import (
     JobDetails,
@@ -24,7 +25,8 @@ from league_api.jobs.models import (
     ProfileJobDetails,
 )
 from league_api.jobs.queue import LADDER_INGESTION_PRIORITY, InMemoryJobQueue
-from league_api.jobs.store import InMemoryJobStore
+from league_api.jobs.store import JobStore
+from league_api.riot.queues import LeagueQueue, league_queue_label
 from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -71,8 +73,17 @@ class JobStatusListResponse(BaseModel):
     jobs: list[dict[str, Any]]
 
 
-def get_job_store(request: Request) -> InMemoryJobStore:
-    return cast(InMemoryJobStore, request.app.state.job_store)
+class JobStatusQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    running_only: bool = True
+    verbose: bool = False
+    include_events: bool = False
+    include_result: bool = False
+
+
+def get_job_store(request: Request) -> JobStore:
+    return cast(JobStore, request.app.state.job_store)
 
 
 def get_job_queue(request: Request) -> InMemoryJobQueue:
@@ -86,7 +97,7 @@ def get_job_queue(request: Request) -> InMemoryJobQueue:
     summary="Start a ladder ingestion job",
 )
 async def start_ladder_ingestion_job(
-    store: Annotated[InMemoryJobStore, Depends(get_job_store)],
+    store: Annotated[JobStore, Depends(get_job_store)],
     job_queue: Annotated[InMemoryJobQueue, Depends(get_job_queue)],
     platform_route: Annotated[
         RiotPlatformRoute,
@@ -96,7 +107,10 @@ async def start_ladder_ingestion_job(
         RiotRegionalRoute,
         Query(description="Riot regional route for Match-V5 match data."),
     ] = RiotRegionalRoute.SEA,
-    queue: Annotated[str, Query(min_length=1, description="Ranked queue.")] = "RANKED_SOLO_5x5",
+    queue: Annotated[
+        LeagueQueue,
+        Query(description="Ranked League-V4 queue."),
+    ] = LeagueQueue.RANKED_SOLO_5X5,
     ladder: Annotated[
         LadderType,
         Query(description="Ladder source to ingest. Only challenger is supported in this stage."),
@@ -121,7 +135,8 @@ async def start_ladder_ingestion_job(
     summary="List job status",
 )
 async def list_job_status(
-    store: Annotated[InMemoryJobStore, Depends(get_job_store)],
+    response: Response,
+    store: Annotated[JobStore, Depends(get_job_store)],
     running_only: Annotated[
         bool,
         Query(description="Only include queued and running jobs."),
@@ -138,6 +153,46 @@ async def list_job_status(
         bool,
         Query(description="Include completed job results when available."),
     ] = False,
+) -> JobStatusListResponse:
+    add_accept_query_header(response)
+    return await _list_job_status(
+        store=store,
+        running_only=running_only,
+        verbose=verbose,
+        include_events=include_events,
+        include_result=include_result,
+    )
+
+
+@router.api_route(
+    "/status",
+    methods=["QUERY"],
+    response_model=JobStatusListResponse,
+    summary="Query job status",
+)
+async def query_job_status(
+    request: Request,
+    response: Response,
+    store: Annotated[JobStore, Depends(get_job_store)],
+) -> JobStatusListResponse:
+    query = await parse_query_json(request, JobStatusQueryRequest)
+    add_accept_query_header(response)
+    return await _list_job_status(
+        store=store,
+        running_only=query.running_only,
+        verbose=query.verbose,
+        include_events=query.include_events,
+        include_result=query.include_result,
+    )
+
+
+async def _list_job_status(
+    *,
+    store: JobStore,
+    running_only: bool,
+    verbose: bool,
+    include_events: bool,
+    include_result: bool,
 ) -> JobStatusListResponse:
     statuses = {JobStatus.QUEUED, JobStatus.RUNNING} if running_only else None
     jobs = await store.list_jobs(statuses=statuses)
@@ -168,7 +223,7 @@ async def list_job_status(
 )
 async def get_job(
     job_id: str,
-    store: Annotated[InMemoryJobStore, Depends(get_job_store)],
+    store: Annotated[JobStore, Depends(get_job_store)],
     include_events: Annotated[
         bool,
         Query(description="Include retained event history for the job."),
@@ -187,7 +242,7 @@ async def get_job(
 )
 async def get_job_result(
     job_id: str,
-    store: Annotated[InMemoryJobStore, Depends(get_job_store)],
+    store: Annotated[JobStore, Depends(get_job_store)],
 ) -> dict[str, Any] | JSONResponse:
     job = await store.get_job(job_id)
     if job is None:
@@ -343,12 +398,8 @@ def _job_source(job: JobRecord) -> str:
     return "unknown"
 
 
-def _queue_label(queue: str) -> str:
-    queue_labels = {
-        "RANKED_SOLO_5x5": "Ranked Solo/Duo",
-        "RANKED_FLEX_SR": "Ranked Flex",
-    }
-    return queue_labels.get(queue, queue)
+def _queue_label(queue: str | LeagueQueue) -> str:
+    return league_queue_label(queue)
 
 
 def _tier_for_ladder(ladder: LadderType) -> str:

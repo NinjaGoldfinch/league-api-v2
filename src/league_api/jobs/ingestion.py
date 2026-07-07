@@ -10,7 +10,7 @@ from league_api.jobs.models import (
     LadderIngestionResult,
     LadderType,
 )
-from league_api.jobs.store import InMemoryJobStore
+from league_api.jobs.store import JobStore
 from league_api.riot.client import RiotClient, RiotRequestEvent, RiotRequestEventHandler
 from league_api.riot.rate_limiter import RiotRateLimitAudience
 from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
@@ -66,7 +66,7 @@ def _default_riot_client_factory(
 
 async def run_ladder_ingestion(
     params: LadderIngestionParams,
-    store: InMemoryJobStore,
+    store: JobStore,
     job_id: str,
     *,
     riot_client_factory: RiotClientFactory = _default_riot_client_factory,
@@ -83,7 +83,7 @@ async def run_ladder_ingestion(
     ) as riot_client:
         if params.ladder == LadderType.CHALLENGER:
             ladder_payload = await riot_client.get_league_v4(
-                f"/lol/league/v4/challengerleagues/by-queue/{params.queue}",
+                f"/lol/league/v4/challengerleagues/by-queue/{params.queue.value}",
                 platform_route=params.platform_route,
                 rate_limit_audience=RiotRateLimitAudience.AUTOMATIC,
             )
@@ -186,7 +186,7 @@ async def _fetch_player_match_ids(
 
 
 def _job_riot_request_event_handler(
-    store: InMemoryJobStore,
+    store: JobStore,
     job_id: str,
 ) -> RiotRequestEventHandler:
     async def handle_event(event: RiotRequestEvent) -> None:

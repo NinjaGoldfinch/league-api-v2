@@ -1,4 +1,4 @@
-.PHONY: install run test lint format typecheck check test-endpoints test-riot-endpoints test-job-endpoints
+.PHONY: install run local compose migrate db-reset test lint format typecheck check test-endpoints test-riot-endpoints test-job-endpoints
 
 install:
 	python -m pip install --upgrade pip
@@ -6,6 +6,18 @@ install:
 
 run:
 	uvicorn league_api.main:app --reload
+
+local:
+	bash scripts/run-local.sh
+
+compose:
+	bash scripts/run-compose.sh
+
+migrate:
+	bash scripts/db-migrate.sh
+
+db-reset:
+	bash scripts/db-reset.sh
 
 test:
 	pytest

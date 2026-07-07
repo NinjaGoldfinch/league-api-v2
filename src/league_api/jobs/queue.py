@@ -3,6 +3,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from itertools import count
+from typing import Any
 
 from league_api.jobs.models import (
     JobError,
@@ -13,7 +14,8 @@ from league_api.jobs.models import (
     ProfileFetchParams,
     ProfileFetchResult,
 )
-from league_api.jobs.store import InMemoryJobStore
+from league_api.jobs.store import JobStore
+from league_api.redis.coordinator import InMemoryJobLockCoordinator, JobLockCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +25,11 @@ LADDER_INGESTION_PRIORITY = 200
 DEFAULT_JOB_PRIORITY = LADDER_INGESTION_PRIORITY
 
 LadderIngestionHandler = Callable[
-    [LadderIngestionParams, InMemoryJobStore, str],
+    [LadderIngestionParams, Any, str],
     Awaitable[LadderIngestionResult],
 ]
 ProfileFetchHandler = Callable[
-    [ProfileFetchParams, InMemoryJobStore, str],
+    [ProfileFetchParams, Any, str],
     Awaitable[ProfileFetchResult],
 ]
 QueuedJobItem = tuple[int, int, str | None]
@@ -39,13 +41,15 @@ class InMemoryJobQueue:
     def __init__(
         self,
         *,
-        store: InMemoryJobStore,
+        store: JobStore,
         ladder_ingestion_handler: LadderIngestionHandler,
         profile_fetch_handler: ProfileFetchHandler,
+        lock_coordinator: JobLockCoordinator | None = None,
     ) -> None:
         self._store = store
         self._ladder_ingestion_handler = ladder_ingestion_handler
         self._profile_fetch_handler = profile_fetch_handler
+        self._lock_coordinator = lock_coordinator or InMemoryJobLockCoordinator()
         self._queue: asyncio.PriorityQueue[QueuedJobItem] = asyncio.PriorityQueue()
         self._sequence = count()
         self._worker_task: asyncio.Task[None] | None = None
@@ -92,8 +96,13 @@ class InMemoryJobQueue:
             logger.warning("Skipping unknown job id %s.", job_id)
             return
 
-        await self._store.mark_running(job_id)
+        lock_token = await self._lock_coordinator.acquire_job_lock(job_id)
+        if lock_token is None:
+            logger.info("Skipping job %s because another worker owns its lock.", job_id)
+            return
+
         try:
+            await self._store.mark_running(job_id)
             result: JobResult
             if job.job_type == JobType.LADDER_INGESTION:
                 if not isinstance(job.params, LadderIngestionParams):
@@ -108,6 +117,7 @@ class InMemoryJobQueue:
             else:
                 msg = f"Unsupported job type: {job.job_type}"
                 raise ValueError(msg)
+            await self._store.mark_succeeded(job_id, result=result)
         except asyncio.CancelledError:
             await self._mark_cancelled(job_id)
             raise
@@ -121,8 +131,8 @@ class InMemoryJobQueue:
                 ),
             )
             return
-
-        await self._store.mark_succeeded(job_id, result=result)
+        finally:
+            await self._lock_coordinator.release_job_lock(job_id, lock_token)
 
     async def _fail_queued_jobs(self) -> None:
         while True:

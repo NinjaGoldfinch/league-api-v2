@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from league_api.riot.queues import LeagueQueue
 from league_api.riot.routing import RiotAccountRegionalRoute, RiotPlatformRoute, RiotRegionalRoute
 
 
@@ -41,7 +42,7 @@ class LadderJobDetails(StrictBaseModel):
     source: str
     platform_route: RiotPlatformRoute
     regional_route: RiotRegionalRoute
-    queue: str
+    queue: LeagueQueue
     queue_label: str
     ladder: LadderType
     tier: str
@@ -119,7 +120,7 @@ class JobEvent(StrictBaseModel):
 class LadderIngestionParams(StrictBaseModel):
     platform_route: RiotPlatformRoute = RiotPlatformRoute.OC1
     regional_route: RiotRegionalRoute = RiotRegionalRoute.SEA
-    queue: str = "RANKED_SOLO_5x5"
+    queue: LeagueQueue = LeagueQueue.RANKED_SOLO_5X5
     ladder: LadderType = LadderType.CHALLENGER
     match_count: int = Field(default=20, ge=1, le=100)
 

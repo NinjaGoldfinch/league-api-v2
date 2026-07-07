@@ -41,6 +41,33 @@ may be left empty when running local tests that override the Riot client.
 
 ## Run the API Locally
 
+Start the API plus PostgreSQL and Redis helper services:
+
+```bash
+make local
+```
+
+Or start the full Docker Compose stack:
+
+```bash
+make compose
+```
+
+Run migrations directly:
+
+```bash
+make migrate
+```
+
+Reset local compose database/cache volumes only when you explicitly want to
+destroy them:
+
+```bash
+CONFIRM_DESTROY=1 make db-reset
+```
+
+To run only Uvicorn:
+
 ```bash
 uvicorn league_api.main:app --reload
 ```
