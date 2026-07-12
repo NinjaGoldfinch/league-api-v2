@@ -58,7 +58,15 @@ class InMemoryMatchStore:
 
     async def get_player_match_ids(self, puuid: str) -> list[str]:
         async with self._lock:
-            return list(self._player_match_ids.get(puuid, []))
+            match_ids = self._player_match_ids.get(puuid, [])
+            return sorted(
+                match_ids,
+                key=lambda match_id: (
+                    self._matches[match_id].game_creation is not None,
+                    self._matches[match_id].game_creation or 0,
+                ),
+                reverse=True,
+            )
 
     async def get_matches(self, match_ids: list[str]) -> dict[str, dict[str, Any]]:
         async with self._lock:
@@ -267,14 +275,18 @@ class PostgresMatchStore:
     ) -> MatchPage:
         from sqlalchemy import text
 
-        where = ["(:search is null or m.match_id ilike '%' || :search || '%')"]
+        where: list[str] = []
+        params: dict[str, Any] = {"offset": offset, "limit": limit}
+        if search is not None:
+            where.append("m.match_id ilike '%' || :search || '%'")
+            params["search"] = search
         if puuid is not None:
             where.append(
                 "exists (select 1 from player_matches filter_pm "
                 "where filter_pm.match_id = m.match_id and filter_pm.puuid = :puuid)"
             )
-        where_sql = " and ".join(where)
-        params = {"search": search, "puuid": puuid, "offset": offset, "limit": limit}
+            params["puuid"] = puuid
+        where_sql = " and ".join(where) if where else "true"
         count_query = text(f"select count(*) from riot_matches m where {where_sql}")
         query = text(
             f"""

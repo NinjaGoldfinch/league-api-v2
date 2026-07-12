@@ -32,6 +32,7 @@ from league_api.jobs.queue import (
     InMemoryJobQueue,
 )
 from league_api.jobs.store import JobStore
+from league_api.matches.store import MatchStore
 from league_api.riot.cache import RiotCacheEntry, RiotCacheStore, build_riot_cache_key
 from league_api.riot.client import RiotClient
 from league_api.riot.errors import (
@@ -514,12 +515,19 @@ async def _get_profile_view(
         if cache_match_ids is not None
         else _job_match_ids(active_job) or _job_match_ids(latest_success_job)
     )
-    match_source_job = (
-        active_job
-        if active_job is not None and isinstance(active_job.result, ProfileFetchResult)
-        else None
+    durable_match_ids: list[str] = []
+    durable_matches: dict[str, dict[str, Any]] = {}
+    match_store = _optional_match_store(request)
+    if match_store is not None and puuid is not None:
+        durable_match_ids = await match_store.get_player_match_ids(puuid)
+        durable_matches = await match_store.get_matches(durable_match_ids)
+    if active_job is None and latest_success_job is not None:
+        match_ids = durable_match_ids
+    all_matches = _compact_match_summaries(
+        match_ids=durable_match_ids,
+        matches=durable_matches,
+        puuid=puuid,
     )
-    all_matches = _compact_match_summaries(match_source_job or latest_success_job, puuid=puuid)
     matches, matches_pagination = _paginate_profile_matches(
         all_matches,
         start=match_start,
@@ -911,12 +919,15 @@ def _job_match_ids(job: JobRecord | None) -> list[str] | None:
     return job.params.match_ids
 
 
-def _compact_match_summaries(job: JobRecord | None, *, puuid: str | None) -> list[dict[str, Any]]:
-    if job is None or not isinstance(job.result, ProfileFetchResult):
-        return []
+def _compact_match_summaries(
+    *,
+    match_ids: list[str],
+    matches: dict[str, dict[str, Any]],
+    puuid: str | None,
+) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
-    for match_id in job.result.match_ids:
-        match = job.result.matches.get(match_id)
+    for match_id in match_ids:
+        match = matches.get(match_id)
         if not isinstance(match, dict):
             continue
         info = match.get("info")
@@ -980,6 +991,10 @@ def _participant_for_match(info: dict[str, Any], *, puuid: str | None) -> dict[s
 
 def _optional_riot_cache_store(request: Request) -> RiotCacheStore | None:
     return cast(RiotCacheStore | None, getattr(request.app.state, "riot_cache_store", None))
+
+
+def _optional_match_store(request: Request) -> MatchStore | None:
+    return cast(MatchStore | None, getattr(request.app.state, "match_store", None))
 
 
 def _safe_puuid(account: dict[str, Any] | None) -> str | None:

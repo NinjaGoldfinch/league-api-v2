@@ -66,6 +66,11 @@ def test_profile_slug_renders_profile_shell_when_enabled(frontend_client: TestCl
     assert "renderJob(diagnostics.active_job" in response.text
     assert "Populating profile" in response.text
     assert "Refreshing profile" in response.text
+    assert 'id="refresh-profile"' in response.text
+    assert "PROFILE_REFRESH_LOCKOUT_MS = 60_000" in response.text
+    assert "league-profile-refresh:" in response.text
+    assert "Refresh in progress" in response.text
+    assert "await queueProfileRefresh(config.profile)" in response.text
     assert 'id="profile-diagnostics"' in response.text
     assert '"profileMatchLimit":15' in response.text
     assert "match_start: String(options.matchStart ?? 0)" in response.text

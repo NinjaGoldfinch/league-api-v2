@@ -95,7 +95,18 @@ class FakeProfileRiotClient:
             count = int(params["count"] or 100) if params is not None else 100
             return self.match_ids[start : start + count]
         match_id = path.rsplit("/", maxsplit=1)[-1]
-        return {"metadata": {"matchId": match_id}, "info": {}}
+        game_creation = int(match_id.rsplit("_", maxsplit=1)[-1])
+        return {
+            "metadata": {"matchId": match_id},
+            "info": {"gameCreation": game_creation},
+        }
+
+
+class FailingSecondMatchClient(FakeProfileRiotClient):
+    async def get_match_v5(self, path: str, **kwargs: Any) -> list[str] | dict[str, Any]:
+        if path.endswith("/OC1_2"):
+            raise RuntimeError("second match failed")
+        return await super().get_match_v5(path, **kwargs)
 
 
 def fake_profile_riot_client_factory(
@@ -150,6 +161,27 @@ async def test_profile_fetch_calls_identity_match_ids_and_details_in_order() -> 
     assert fake_client.calls[2]["params"] == {"start": 0, "count": 100}
     assert fake_client.calls[2]["bypass_cache"] is True
     assert fake_client.calls[3]["bypass_cache"] is False
+
+
+@pytest.mark.asyncio
+async def test_profile_fetch_links_each_match_before_processing_the_next_detail() -> None:
+    store = InMemoryJobStore()
+    match_store = InMemoryMatchStore()
+    job = await store.create_job(
+        job_type=JobType.PROFILE_FETCH,
+        params=ProfileFetchParams(game_name="GameName", tag_line="OCE"),
+    )
+
+    with pytest.raises(RuntimeError, match="second match failed"):
+        await run_profile_fetch(
+            ProfileFetchParams(game_name="GameName", tag_line="OCE"),
+            store,
+            job.job_id,
+            riot_client_factory=fake_profile_riot_client_factory(FailingSecondMatchClient()),
+            match_store=match_store,
+        )
+
+    assert await match_store.get_player_match_ids("puuid-1") == ["OC1_1"]
 
 
 @pytest.mark.asyncio

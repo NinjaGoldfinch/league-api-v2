@@ -305,6 +305,7 @@ async def _record_and_process_match_id_page(
                 regional_route=str(params.regional_route),
                 payload=match_payload,
             )
+        await match_store.link_player_matches(puuid, [match_id])
         matches[match_id] = match_payload
         progress.matches_fetched += 1
         await store.update_progress(job_id, progress)
@@ -318,7 +319,6 @@ async def _record_and_process_match_id_page(
             matches=matches,
             errors=errors,
         )
-    await match_store.link_player_matches(puuid, page_unique_match_ids)
     return reached_known_match
 
 

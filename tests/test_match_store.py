@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from league_api.matches.store import InMemoryMatchStore
+from league_api.matches.store import InMemoryMatchStore, PostgresMatchStore
 from league_api.riot.cache import InMemoryRiotCacheStore, RiotCacheEntry, build_riot_cache_key
 
 
@@ -60,3 +60,60 @@ async def test_in_memory_cache_delete_count_and_prune_are_idempotent() -> None:
     assert await store.prune_expired(now=now) == 1
     assert await store.prune_expired(now=now) == 0
     assert await store.delete(key.cache_key) is False
+
+
+@pytest.mark.asyncio
+async def test_postgres_match_store_omits_null_optional_filter_parameters() -> None:
+    connection = _RecordingConnection()
+    store = PostgresMatchStore(_RecordingEngine(connection))
+
+    page = await store.list_matches(search=None, puuid=None, offset=0, limit=100)
+
+    assert page.total == 0
+    assert page.matches == []
+    assert len(connection.calls) == 2
+    for statement, params in connection.calls:
+        assert "where true" in statement
+        assert params == {"offset": 0, "limit": 100}
+        assert ":search" not in statement
+        assert ":puuid" not in statement
+
+
+class _RecordingResult:
+    def mappings(self) -> "_RecordingResult":
+        return self
+
+    def all(self) -> list[object]:
+        return []
+
+
+class _RecordingConnection:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def scalar(self, statement: object, params: dict[str, object]) -> int:
+        self.calls.append((str(statement), params))
+        return 0
+
+    async def execute(self, statement: object, params: dict[str, object]) -> _RecordingResult:
+        self.calls.append((str(statement), params))
+        return _RecordingResult()
+
+
+class _RecordingTransaction:
+    def __init__(self, connection: _RecordingConnection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self) -> _RecordingConnection:
+        return self.connection
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+class _RecordingEngine:
+    def __init__(self, connection: _RecordingConnection) -> None:
+        self.connection = connection
+
+    def begin(self) -> _RecordingTransaction:
+        return _RecordingTransaction(self.connection)

@@ -307,6 +307,12 @@ _HTML_TEMPLATE = """<!doctype html>
       padding: 18px;
     }
 
+    .profile-status-actions {
+      display: grid;
+      justify-items: end;
+      gap: 8px;
+    }
+
     .profile-icon {
       width: 76px;
       height: 76px;
@@ -641,7 +647,10 @@ _HTML_TEMPLATE = """<!doctype html>
           <h2 id="profile-title">Profile</h2>
           <p id="profile-subtitle">Waiting for data.</p>
         </div>
-        <span class="status-pill" id="profile-status">Not started</span>
+        <div class="profile-status-actions">
+          <span class="status-pill" id="profile-status">Not started</span>
+          <button id="refresh-profile" type="button">Refresh profile</button>
+        </div>
       </article>
 
       <article class="panel progress" aria-label="Profile fetch progress">
@@ -692,6 +701,7 @@ _HTML_TEMPLATE = """<!doctype html>
     window.__LEAGUE_PROFILE_CONFIG__ = __APP_CONFIG__;
 
     const config = window.__LEAGUE_PROFILE_CONFIG__;
+    const PROFILE_REFRESH_LOCKOUT_MS = 60_000;
     const state = {
       dataDragonVersion: "15.13.1",
       jobId: null,
@@ -699,7 +709,9 @@ _HTML_TEMPLATE = """<!doctype html>
       profilePuuid: null,
       cachedProfile: null,
       jobResult: null,
-      matchPagination: null
+      matchPagination: null,
+      refreshLockTimer: null,
+      profileLifecycleState: null
     };
 
     const els = {
@@ -712,6 +724,7 @@ _HTML_TEMPLATE = """<!doctype html>
       profileTitle: document.getElementById("profile-title"),
       subtitle: document.getElementById("profile-subtitle"),
       status: document.getElementById("profile-status"),
+      refreshProfile: document.getElementById("refresh-profile"),
       icon: document.getElementById("profile-icon"),
       progressLabel: document.getElementById("progress-label"),
       progressPercent: document.getElementById("progress-percent"),
@@ -1155,6 +1168,72 @@ _HTML_TEMPLATE = """<!doctype html>
       return requestJson(`/profiles/fetch?${profileApiParams(profile)}`, { method: "POST" });
     }
 
+    function refreshLockKey(profile) {
+      return `league-profile-refresh:${profile.riotId.toLocaleLowerCase()}`;
+    }
+
+    function refreshLockedUntil(profile) {
+      try {
+        return Number(window.localStorage.getItem(refreshLockKey(profile))) || 0;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    function lockProfileRefresh(profile) {
+      const lockedUntil = Date.now() + PROFILE_REFRESH_LOCKOUT_MS;
+      try {
+        window.localStorage.setItem(refreshLockKey(profile), String(lockedUntil));
+      } catch (_) {
+        // The in-memory countdown still prevents repeated clicks in this page.
+      }
+      return lockedUntil;
+    }
+
+    function renderRefreshButton(profile) {
+      window.clearTimeout(state.refreshLockTimer);
+      state.refreshLockTimer = null;
+      const jobActive = ["populating", "refreshing"].includes(state.profileLifecycleState);
+      const secondsRemaining = Math.max(
+        0,
+        Math.ceil((refreshLockedUntil(profile) - Date.now()) / 1000)
+      );
+      els.refreshProfile.disabled = jobActive || secondsRemaining > 0;
+      els.refreshProfile.textContent = jobActive
+        ? "Refresh in progress"
+        : secondsRemaining > 0
+          ? `Refresh profile (${secondsRemaining}s)`
+          : "Refresh profile";
+      if (secondsRemaining > 0) {
+        state.refreshLockTimer = window.setTimeout(() => renderRefreshButton(profile), 1000);
+      }
+    }
+
+    async function queueProfileRefresh(profile) {
+      if (refreshLockedUntil(profile) > Date.now()) {
+        renderRefreshButton(profile);
+        return null;
+      }
+      lockProfileRefresh(profile);
+      renderRefreshButton(profile);
+      const job = await startProfileJob(profile);
+      if (!job.job_id) {
+        throw new Error("Profile job did not return a job id.");
+      }
+      state.jobId = job.job_id;
+      const nextState = state.profileLifecycleState === "missing" ? "populating" : "refreshing";
+      state.profileLifecycleState = nextState;
+      setStatus(
+        job.identity_status === "already_running"
+          ? "Refresh in progress"
+          : nextState === "populating"
+            ? "Populating profile"
+            : "Refreshing profile"
+      );
+      renderRefreshButton(profile);
+      return job;
+    }
+
     function renderCompactMatches(matches, options = {}) {
       if (!options.append) {
         els.matchList.replaceChildren();
@@ -1234,6 +1313,10 @@ _HTML_TEMPLATE = """<!doctype html>
       const summary = view.data_summary || {};
       const progressSnapshot = view.progress;
       const diagnostics = view.diagnostics || {};
+      state.profileLifecycleState = lifecycle.state || null;
+      if (config.profile) {
+        renderRefreshButton(config.profile);
+      }
       const account = view.account || {};
       const compactMatches = Array.isArray(view.matches) ? view.matches : [];
       const hasCompactMatches = compactMatches.length > 0;
@@ -1344,14 +1427,11 @@ _HTML_TEMPLATE = """<!doctype html>
           && new Date(dataSummary.refresh_after).getTime() <= Date.now();
         const shouldRefresh = !["populating", "refreshing"].includes(lifecycle.state)
           && (lifecycle.state === "missing" || refreshDue);
+        let refreshStarted = false;
         if (shouldRefresh) {
-          const job = await startProfileJob(profile);
-          if (!job.job_id) {
-            throw new Error("Profile job did not return a job id.");
-          }
-          state.jobId = job.job_id;
-          setStatus(job.identity_status === "already_running" ? "Job found" : "Job queued");
-          if (job.account || job.summoner || job.match_ids) {
+          const job = await queueProfileRefresh(profile);
+          refreshStarted = job !== null;
+          if (job && (job.account || job.summoner || job.match_ids)) {
             renderCachedProfile({
               identity_status: job.identity_status,
               account: job.account || {},
@@ -1360,7 +1440,7 @@ _HTML_TEMPLATE = """<!doctype html>
             });
           }
         }
-        if (["populating", "refreshing"].includes(lifecycle.state) || shouldRefresh) {
+        if (["populating", "refreshing"].includes(lifecycle.state) || refreshStarted) {
           await pollProfileView(profile);
         }
       } catch (error) {
@@ -1462,6 +1542,20 @@ _HTML_TEMPLATE = """<!doctype html>
         window.location.assign(`/${slug}`);
       } catch (error) {
         els.message.textContent = error.message;
+      }
+    });
+
+    els.refreshProfile.addEventListener("click", async () => {
+      if (!config.profile) return;
+      try {
+        const job = await queueProfileRefresh(config.profile);
+        if (job) {
+          await pollProfileView(config.profile);
+        }
+      } catch (error) {
+        setStatus("Refresh failed", "error");
+        els.jobNote.textContent = error.message;
+        renderRefreshButton(config.profile);
       }
     });
 

@@ -20,6 +20,7 @@ from league_api.jobs.queue import (
 )
 from league_api.jobs.store import InMemoryJobStore
 from league_api.main import create_app
+from league_api.matches.store import InMemoryMatchStore
 from league_api.riot.cache import InMemoryRiotCacheStore, build_riot_cache_key
 from league_api.riot.client import RiotClient
 from league_api.riot.errors import RiotApiError, RiotRateLimitWouldWaitError
@@ -613,19 +614,20 @@ def test_get_profile_view_includes_active_job_partial_match_summaries() -> None:
         )
     )
     asyncio.run(store.mark_running(active_job.job_id))
+    partial_result = _profile_result(
+        summary=JobProgress(
+            players_discovered=1,
+            players_processed=1,
+            match_ids_discovered=2,
+            unique_match_ids=2,
+            matches_fetched=1,
+        ),
+        match_ids=["OC1_1", "OC1_2"],
+    )
     asyncio.run(
         store.update_result(
             active_job.job_id,
-            result=_profile_result(
-                summary=JobProgress(
-                    players_discovered=1,
-                    players_processed=1,
-                    match_ids_discovered=2,
-                    unique_match_ids=2,
-                    matches_fetched=1,
-                ),
-                match_ids=["OC1_1", "OC1_2"],
-            ),
+            result=partial_result,
         )
     )
     fake_queue = FakeJobQueue()
@@ -638,6 +640,7 @@ def test_get_profile_view_includes_active_job_partial_match_summaries() -> None:
     try:
         with TestClient(app) as test_client:
             app.state.riot_cache_store = InMemoryRiotCacheStore()
+            app.state.match_store = _match_store_for_result(partial_result)
             response = test_client.get("/profiles/by-riot-id/GameName/OCE")
     finally:
         app.dependency_overrides.clear()
@@ -659,13 +662,14 @@ def test_get_profile_view_includes_active_job_partial_match_summaries() -> None:
 
 def test_get_profile_view_uses_completed_job_match_summaries() -> None:
     store = InMemoryJobStore()
+    completed_result = _profile_result()
     completed_job = asyncio.run(
         store.create_job(
             job_type=JobType.PROFILE_FETCH,
             params=ProfileFetchParams(game_name="GameName", tag_line="OCE"),
         )
     )
-    asyncio.run(store.mark_succeeded(completed_job.job_id, result=_profile_result()))
+    asyncio.run(store.mark_succeeded(completed_job.job_id, result=completed_result))
     fake_queue = FakeJobQueue()
     fake_riot_client = FakeRiotClient()
     app = create_app()
@@ -676,7 +680,11 @@ def test_get_profile_view_uses_completed_job_match_summaries() -> None:
     try:
         with TestClient(app) as test_client:
             app.state.riot_cache_store = InMemoryRiotCacheStore()
+            match_store = _match_store_for_result(completed_result)
+            app.state.match_store = match_store
             response = test_client.get("/profiles/by-riot-id/GameName/OCE")
+            asyncio.run(match_store.delete_match("OC1_1"))
+            deleted_response = test_client.get("/profiles/by-riot-id/GameName/OCE")
     finally:
         app.dependency_overrides.clear()
 
@@ -704,19 +712,23 @@ def test_get_profile_view_uses_completed_job_match_summaries() -> None:
             "team_position": "MIDDLE",
         }
     ]
+    assert deleted_response.status_code == 200
+    assert deleted_response.json()["match_ids"] == []
+    assert deleted_response.json()["matches"] == []
     assert fake_queue.enqueued == []
     assert fake_riot_client.calls == []
 
 
 def test_get_profile_view_paginates_compact_match_summaries() -> None:
     store = InMemoryJobStore()
+    completed_result = _profile_result_with_matches(20)
     completed_job = asyncio.run(
         store.create_job(
             job_type=JobType.PROFILE_FETCH,
             params=ProfileFetchParams(game_name="GameName", tag_line="OCE"),
         )
     )
-    asyncio.run(store.mark_succeeded(completed_job.job_id, result=_profile_result_with_matches(20)))
+    asyncio.run(store.mark_succeeded(completed_job.job_id, result=completed_result))
     fake_queue = FakeJobQueue()
     fake_riot_client = FakeRiotClient()
     app = create_app()
@@ -727,6 +739,7 @@ def test_get_profile_view_paginates_compact_match_summaries() -> None:
     try:
         with TestClient(app) as test_client:
             app.state.riot_cache_store = InMemoryRiotCacheStore()
+            app.state.match_store = _match_store_for_result(completed_result)
             first_response = test_client.get("/profiles/by-riot-id/GameName/OCE")
             second_response = test_client.get(
                 "/profiles/by-riot-id/GameName/OCE",
@@ -748,8 +761,8 @@ def test_get_profile_view_paginates_compact_match_summaries() -> None:
     first_body = first_response.json()
     assert first_body["status"]["state"] == "ready"
     assert len(first_body["matches"]) == 15
-    assert first_body["matches"][0]["match_id"] == "OC1_1"
-    assert first_body["matches"][-1]["match_id"] == "OC1_15"
+    assert first_body["matches"][0]["match_id"] == "OC1_20"
+    assert first_body["matches"][-1]["match_id"] == "OC1_6"
     assert first_body["matches_pagination"] == {
         "start": 0,
         "limit": 15,
@@ -762,11 +775,11 @@ def test_get_profile_view_paginates_compact_match_summaries() -> None:
     assert second_response.status_code == 200
     second_body = second_response.json()
     assert [match["match_id"] for match in second_body["matches"]] == [
-        "OC1_16",
-        "OC1_17",
-        "OC1_18",
-        "OC1_19",
-        "OC1_20",
+        "OC1_5",
+        "OC1_4",
+        "OC1_3",
+        "OC1_2",
+        "OC1_1",
     ]
     assert second_body["matches_pagination"] == {
         "start": 15,
@@ -958,6 +971,17 @@ def _profile_result_with_matches(match_count: int) -> ProfileFetchResult:
         match_ids=match_ids,
         matches=matches,
     )
+
+
+def _match_store_for_result(result: ProfileFetchResult) -> InMemoryMatchStore:
+    async def seed() -> InMemoryMatchStore:
+        match_store = InMemoryMatchStore()
+        for match_id, payload in result.matches.items():
+            await match_store.save_match(match_id, regional_route="sea", payload=payload)
+        await match_store.link_player_matches(result.account["puuid"], list(result.matches))
+        return match_store
+
+    return asyncio.run(seed())
 
 
 async def _put_cache_entry(
