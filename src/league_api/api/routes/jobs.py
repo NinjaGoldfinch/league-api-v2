@@ -1,10 +1,14 @@
+import base64
+import binascii
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
+from league_api.api.query import add_accept_query_header, parse_query_json
 from league_api.core.config import Settings, get_settings
 from league_api.jobs.models import (
     JobDetails,
@@ -24,7 +28,8 @@ from league_api.jobs.models import (
     ProfileJobDetails,
 )
 from league_api.jobs.queue import LADDER_INGESTION_PRIORITY, InMemoryJobQueue
-from league_api.jobs.store import InMemoryJobStore
+from league_api.jobs.store import JobListCursor, JobStore
+from league_api.riot.queues import LeagueQueue, league_queue_label
 from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -68,11 +73,28 @@ class JobStatusListResponse(BaseModel):
     verbose: bool
     include_events: bool
     include_result: bool
+    limit: int
+    next_cursor: str | None
+    has_more: bool
     jobs: list[dict[str, Any]]
 
 
-def get_job_store(request: Request) -> InMemoryJobStore:
-    return cast(InMemoryJobStore, request.app.state.job_store)
+class JobStatusQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    running_only: bool = True
+    verbose: bool = False
+    include_events: bool = False
+    include_result: bool = False
+    status: list[JobStatus] | None = None
+    job_type: JobType | None = None
+    riot_id: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    cursor: str | None = None
+
+
+def get_job_store(request: Request) -> JobStore:
+    return cast(JobStore, request.app.state.job_store)
 
 
 def get_job_queue(request: Request) -> InMemoryJobQueue:
@@ -86,7 +108,7 @@ def get_job_queue(request: Request) -> InMemoryJobQueue:
     summary="Start a ladder ingestion job",
 )
 async def start_ladder_ingestion_job(
-    store: Annotated[InMemoryJobStore, Depends(get_job_store)],
+    store: Annotated[JobStore, Depends(get_job_store)],
     job_queue: Annotated[InMemoryJobQueue, Depends(get_job_queue)],
     platform_route: Annotated[
         RiotPlatformRoute,
@@ -96,7 +118,10 @@ async def start_ladder_ingestion_job(
         RiotRegionalRoute,
         Query(description="Riot regional route for Match-V5 match data."),
     ] = RiotRegionalRoute.SEA,
-    queue: Annotated[str, Query(min_length=1, description="Ranked queue.")] = "RANKED_SOLO_5x5",
+    queue: Annotated[
+        LeagueQueue,
+        Query(description="Ranked League-V4 queue."),
+    ] = LeagueQueue.RANKED_SOLO_5X5,
     ladder: Annotated[
         LadderType,
         Query(description="Ladder source to ingest. Only challenger is supported in this stage."),
@@ -121,7 +146,8 @@ async def start_ladder_ingestion_job(
     summary="List job status",
 )
 async def list_job_status(
-    store: Annotated[InMemoryJobStore, Depends(get_job_store)],
+    response: Response,
+    store: Annotated[JobStore, Depends(get_job_store)],
     running_only: Annotated[
         bool,
         Query(description="Only include queued and running jobs."),
@@ -138,9 +164,98 @@ async def list_job_status(
         bool,
         Query(description="Include completed job results when available."),
     ] = False,
+    job_statuses: Annotated[
+        list[JobStatus] | None,
+        Query(alias="status", description="Filter by one or more job statuses."),
+    ] = None,
+    job_type: Annotated[
+        JobType | None,
+        Query(description="Filter by job type."),
+    ] = None,
+    riot_id: Annotated[
+        str | None,
+        Query(description="Filter profile jobs by Riot ID in gameName#tagLine format."),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(ge=1, le=100, description="Maximum number of jobs to return."),
+    ] = 50,
+    cursor: Annotated[
+        str | None,
+        Query(description="Opaque pagination cursor from a previous response."),
+    ] = None,
 ) -> JobStatusListResponse:
-    statuses = {JobStatus.QUEUED, JobStatus.RUNNING} if running_only else None
-    jobs = await store.list_jobs(statuses=statuses)
+    add_accept_query_header(response)
+    return await _list_job_status(
+        store=store,
+        running_only=running_only,
+        verbose=verbose,
+        include_events=include_events,
+        include_result=include_result,
+        job_statuses=set(job_statuses) if job_statuses is not None else None,
+        job_type=job_type,
+        riot_id=riot_id,
+        limit=limit,
+        cursor=cursor,
+    )
+
+
+@router.api_route(
+    "/status",
+    methods=["QUERY"],
+    response_model=JobStatusListResponse,
+    summary="Query job status",
+)
+async def query_job_status(
+    request: Request,
+    response: Response,
+    store: Annotated[JobStore, Depends(get_job_store)],
+) -> JobStatusListResponse:
+    query = await parse_query_json(request, JobStatusQueryRequest)
+    add_accept_query_header(response)
+    return await _list_job_status(
+        store=store,
+        running_only=query.running_only,
+        verbose=query.verbose,
+        include_events=query.include_events,
+        include_result=query.include_result,
+        job_statuses=set(query.status) if query.status is not None else None,
+        job_type=query.job_type,
+        riot_id=query.riot_id,
+        limit=query.limit,
+        cursor=query.cursor,
+    )
+
+
+async def _list_job_status(
+    *,
+    store: JobStore,
+    running_only: bool,
+    verbose: bool,
+    include_events: bool,
+    include_result: bool,
+    job_statuses: set[JobStatus] | None = None,
+    job_type: JobType | None = None,
+    riot_id: str | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+) -> JobStatusListResponse:
+    statuses = (
+        job_statuses
+        if job_statuses is not None
+        else {JobStatus.QUEUED, JobStatus.RUNNING}
+        if running_only
+        else None
+    )
+    page = await store.list_jobs_page(
+        statuses=statuses,
+        job_type=job_type,
+        riot_id=riot_id,
+        limit=limit,
+        cursor=_decode_cursor(cursor) if cursor is not None else None,
+        include_events=verbose or include_events,
+        include_result=include_result,
+    )
     generated_at = datetime.now(UTC)
     return JobStatusListResponse(
         generated_at=generated_at,
@@ -148,6 +263,9 @@ async def list_job_status(
         verbose=verbose,
         include_events=include_events,
         include_result=include_result,
+        limit=limit,
+        next_cursor=_encode_cursor(page.next_cursor),
+        has_more=page.has_more,
         jobs=[
             _job_payload(
                 job,
@@ -156,7 +274,7 @@ async def list_job_status(
                 include_events=include_events,
                 include_result=include_result,
             )
-            for job in jobs
+            for job in page.jobs
         ],
     )
 
@@ -168,7 +286,7 @@ async def list_job_status(
 )
 async def get_job(
     job_id: str,
-    store: Annotated[InMemoryJobStore, Depends(get_job_store)],
+    store: Annotated[JobStore, Depends(get_job_store)],
     include_events: Annotated[
         bool,
         Query(description="Include retained event history for the job."),
@@ -187,7 +305,7 @@ async def get_job(
 )
 async def get_job_result(
     job_id: str,
-    store: Annotated[InMemoryJobStore, Depends(get_job_store)],
+    store: Annotated[JobStore, Depends(get_job_store)],
 ) -> dict[str, Any] | JSONResponse:
     job = await store.get_job(job_id)
     if job is None:
@@ -260,6 +378,38 @@ def _success_result(job: JobRecord) -> dict[str, Any]:
     return payload
 
 
+def _encode_cursor(cursor: JobListCursor | None) -> str | None:
+    if cursor is None:
+        return None
+    payload = {
+        "created_at": cursor.created_at.isoformat(),
+        "job_id": cursor.job_id,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> JobListCursor:
+    try:
+        padded_cursor = cursor + ("=" * (-len(cursor) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded_cursor.encode()).decode())
+        created_at = datetime.fromisoformat(str(payload["created_at"]))
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        job_id = str(payload["job_id"])
+    except (binascii.Error, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid job status cursor.",
+        ) from exc
+    if not job_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid job status cursor.",
+        )
+    return JobListCursor(created_at=created_at, job_id=job_id)
+
+
 def _job_payload(
     job: JobRecord,
     *,
@@ -317,8 +467,9 @@ def _job_details(job: JobRecord) -> JobDetails:
             match_detail_request_count=job.progress.unique_match_ids,
         )
 
-    account = job.params.account or {}
-    summoner = job.params.summoner or {}
+    result = job.result if isinstance(job.result, ProfileFetchResult) else None
+    account = job.params.account or (result.account if result is not None else {})
+    summoner = job.params.summoner or (result.summoner if result is not None else {})
     puuid = account.get("puuid") or summoner.get("puuid")
     return ProfileJobDetails(
         source=_job_source(job),
@@ -331,6 +482,8 @@ def _job_details(job: JobRecord) -> JobDetails:
         regional_route=job.params.regional_route,
         match_count=job.params.match_count,
         match_id_request_count=1,
+        match_id_page_request_count=job.progress.match_id_pages_fetched,
+        match_id_pages_with_results=job.progress.match_id_pages_with_results,
         match_detail_request_count=job.progress.unique_match_ids,
     )
 
@@ -343,12 +496,8 @@ def _job_source(job: JobRecord) -> str:
     return "unknown"
 
 
-def _queue_label(queue: str) -> str:
-    queue_labels = {
-        "RANKED_SOLO_5x5": "Ranked Solo/Duo",
-        "RANKED_FLEX_SR": "Ranked Flex",
-    }
-    return queue_labels.get(queue, queue)
+def _queue_label(queue: str | LeagueQueue) -> str:
+    return league_queue_label(queue)
 
 
 def _tier_for_ladder(ladder: LadderType) -> str:
@@ -464,9 +613,18 @@ def _job_stage(job: JobRecord) -> tuple[str, str]:
             return "match_ids", "Fetching recent Match-V5 IDs for the profile."
         if progress.matches_fetched < progress.unique_match_ids:
             next_match = progress.matches_fetched + 1
+            page_count = progress.match_id_pages_with_results
+            page_context = (
+                f" from {page_count} Match-V5 ID page{'s' if page_count != 1 else ''}"
+                if page_count > 0
+                else ""
+            )
             return (
                 "match_detail",
-                f"Fetching profile match detail {next_match} of {progress.unique_match_ids}.",
+                (
+                    f"Fetching profile match detail {next_match} "
+                    f"of {progress.unique_match_ids}{page_context}."
+                ),
             )
         return "finalizing", "Finishing profile fetch."
 

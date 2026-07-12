@@ -1,3 +1,6 @@
+import pytest
+
+from league_api.riot.errors import RiotConfigurationError
 from league_api.riot.rate_limiter import RiotRateLimit, RiotRateLimitAudience, RiotRateLimitManager
 
 
@@ -75,6 +78,41 @@ async def test_automatic_requests_stop_at_reserved_capacity_while_manual_proceed
     acquired, wait_seconds = limiter.try_acquire(audience=RiotRateLimitAudience.MANUAL)
     assert acquired
     assert wait_seconds == 0.0
+
+
+async def test_automatic_requests_use_zero_capacity_window_when_reserve_is_unlocked() -> None:
+    clock = FakeClock()
+    limiter = RiotRateLimitManager(
+        limits=[RiotRateLimit(request_count=1, window_seconds=1.0)],
+        max_retries=3,
+        retry_after_buffer_seconds=0.0,
+        retry_after_fallback_seconds=120.0,
+        manual_reserve_fraction=0.2,
+        manual_reserve_unlock_seconds=10.0,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    await limiter.acquire(audience=RiotRateLimitAudience.AUTOMATIC)
+
+    assert clock.sleeps == []
+
+
+async def test_automatic_requests_with_zero_capacity_fail_cleanly_on_empty_window() -> None:
+    clock = FakeClock()
+    limiter = RiotRateLimitManager(
+        limits=[RiotRateLimit(request_count=1, window_seconds=120.0)],
+        max_retries=3,
+        retry_after_buffer_seconds=0.0,
+        retry_after_fallback_seconds=120.0,
+        manual_reserve_fraction=1.0,
+        manual_reserve_unlock_seconds=10.0,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    with pytest.raises(RiotConfigurationError, match="no configured rate-limit capacity"):
+        await limiter.acquire(audience=RiotRateLimitAudience.AUTOMATIC)
 
 
 async def test_automatic_requests_can_use_reserved_capacity_near_window_reset() -> None:

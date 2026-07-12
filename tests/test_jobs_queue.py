@@ -73,6 +73,144 @@ async def test_queue_processes_job_asynchronously() -> None:
 
 
 @pytest.mark.asyncio
+async def test_queue_recovers_persisted_queued_jobs_after_restart() -> None:
+    store = InMemoryJobStore()
+    processed = asyncio.Event()
+
+    async def profile_handler(
+        params: ProfileFetchParams,
+        store_arg: InMemoryJobStore,
+        job_id: str,
+    ) -> ProfileFetchResult:
+        assert params.riot_id == "GameName#OCE"
+        assert store_arg is store
+        assert job_id == job.job_id
+        processed.set()
+        return ProfileFetchResult(
+            summary=JobProgress(players_discovered=1, players_processed=1),
+            account={"puuid": "puuid-1"},
+            summoner={"puuid": "puuid-1"},
+            match_ids=[],
+            matches={},
+        )
+
+    job = await store.create_job(
+        job_type=JobType.PROFILE_FETCH,
+        params=ProfileFetchParams(game_name="GameName", tag_line="OCE"),
+    )
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=_unexpected_ladder_handler,
+        profile_fetch_handler=profile_handler,
+    )
+    queue.start()
+    try:
+        recovered = await queue.recover_queued_jobs()
+        await asyncio.wait_for(processed.wait(), timeout=1)
+        await _wait_for_status(store, job.job_id, JobStatus.SUCCEEDED)
+    finally:
+        await queue.stop()
+
+    assert recovered == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_queue_entry_does_not_process_completed_job_twice() -> None:
+    store = InMemoryJobStore()
+    calls = 0
+
+    async def profile_handler(
+        params: ProfileFetchParams,
+        store_arg: InMemoryJobStore,
+        job_id: str,
+    ) -> ProfileFetchResult:
+        del params, store_arg, job_id
+        nonlocal calls
+        calls += 1
+        return ProfileFetchResult(
+            summary=JobProgress(players_discovered=1, players_processed=1),
+            account={"puuid": "puuid-1"},
+            summoner={"puuid": "puuid-1"},
+            match_ids=[],
+            matches={},
+        )
+
+    job = await store.create_job(
+        job_type=JobType.PROFILE_FETCH,
+        params=ProfileFetchParams(game_name="GameName", tag_line="OCE"),
+    )
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=_unexpected_ladder_handler,
+        profile_fetch_handler=profile_handler,
+    )
+    await queue.enqueue(job.job_id, priority=PROFILE_FETCH_PRIORITY)
+    await queue.enqueue(job.job_id, priority=PROFILE_FETCH_PRIORITY)
+    queue.start()
+    try:
+        await _wait_for_status(store, job.job_id, JobStatus.SUCCEEDED)
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+    finally:
+        await queue.stop()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_queue_skips_job_when_lock_is_already_owned() -> None:
+    store = InMemoryJobStore()
+    called = False
+
+    class LockedCoordinator:
+        async def acquire_job_lock(self, job_id: str, *, ttl_seconds: int = 900) -> str | None:
+            del job_id, ttl_seconds
+            return None
+
+        async def release_job_lock(self, job_id: str, token: str) -> None:
+            del job_id, token
+
+        async def close(self) -> None:
+            return None
+
+    async def handler(
+        params: LadderIngestionParams,
+        store_arg: InMemoryJobStore,
+        job_id: str,
+    ) -> LadderIngestionResult:
+        del params, store_arg, job_id
+        nonlocal called
+        called = True
+        return LadderIngestionResult(
+            summary=JobProgress(players_discovered=1, players_processed=1),
+            player_puuids=["puuid-1"],
+            match_ids=[],
+            matches={},
+        )
+
+    queue = InMemoryJobQueue(
+        store=store,
+        ladder_ingestion_handler=handler,
+        profile_fetch_handler=_unexpected_profile_handler,
+        lock_coordinator=LockedCoordinator(),
+    )
+    queue.start()
+    try:
+        job = await store.create_job(
+            job_type=JobType.LADDER_INGESTION,
+            params=LadderIngestionParams(),
+        )
+        await queue.enqueue(job.job_id)
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+        stored_job = await store.get_job(job.job_id)
+    finally:
+        await queue.stop()
+
+    assert not called
+    assert stored_job is not None
+    assert stored_job.status is JobStatus.QUEUED
+
+
+@pytest.mark.asyncio
 async def test_queue_marks_failed_job_and_continues_processing() -> None:
     store = InMemoryJobStore()
     calls = 0

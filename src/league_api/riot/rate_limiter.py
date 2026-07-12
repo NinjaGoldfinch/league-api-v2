@@ -10,6 +10,7 @@ from email.utils import parsedate_to_datetime
 from enum import StrEnum
 
 from league_api.core.config import Settings
+from league_api.riot.errors import RiotConfigurationError
 
 RateLimitWaitCallback = Callable[[float], Awaitable[None]]
 
@@ -139,11 +140,18 @@ class RiotRateLimitManager:
 
                 if audience is RiotRateLimitAudience.AUTOMATIC:
                     automatic_capacity = self._automatic_capacity(limit)
-                    if len(
-                        timestamps
-                    ) >= automatic_capacity and not self._automatic_reserve_unlocked(
-                        limit, timestamps, now
-                    ):
+                    if len(timestamps) >= automatic_capacity:
+                        if not timestamps:
+                            if limit.window_seconds <= self._manual_reserve_unlock_seconds:
+                                continue
+                            msg = (
+                                "Automatic Riot requests have no configured rate-limit capacity. "
+                                "Increase the Riot app rate-limit request counts or reduce "
+                                "RIOT_MANUAL_RATE_LIMIT_RESERVE_FRACTION."
+                            )
+                            raise RiotConfigurationError(msg)
+                        if self._automatic_reserve_unlocked(limit, timestamps, now):
+                            continue
                         wait_until = max(
                             wait_until,
                             timestamps[0].occurred_at

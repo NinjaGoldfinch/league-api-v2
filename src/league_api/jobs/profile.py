@@ -9,10 +9,13 @@ from league_api.jobs.models import (
     ProfileFetchParams,
     ProfileFetchResult,
 )
-from league_api.jobs.store import InMemoryJobStore
+from league_api.jobs.store import JobStore
+from league_api.matches.store import InMemoryMatchStore, MatchStore
 from league_api.riot.client import RiotClient, RiotRequestEventHandler
 from league_api.riot.rate_limiter import RiotRateLimitAudience
 from league_api.riot.routing import RiotAccountRegionalRoute, RiotPlatformRoute, RiotRegionalRoute
+
+MATCH_ID_PAGE_SIZE = 100
 
 
 class ProfileRiotApiClient(Protocol):
@@ -44,6 +47,7 @@ class ProfileRiotApiClient(Protocol):
         params: dict[str, int | str | None] | None = None,
         rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
         wait_for_rate_limit: bool = True,
+        bypass_cache: bool = False,
     ) -> Any: ...
 
 
@@ -75,14 +79,18 @@ def _default_profile_riot_client_factory(
 
 async def run_profile_fetch(
     params: ProfileFetchParams,
-    store: InMemoryJobStore,
+    store: JobStore,
     job_id: str,
     *,
     riot_client_factory: ProfileRiotClientFactory = _default_profile_riot_client_factory,
+    match_store: MatchStore | None = None,
 ) -> ProfileFetchResult:
+    resolved_match_store = match_store or InMemoryMatchStore()
     progress = JobProgress()
     errors: list[JobError] = []
     matches: dict[str, dict[str, Any]] = {}
+    unique_match_ids: list[str] = []
+    seen_match_ids: set[str] = set()
 
     async with riot_client_factory(
         request_event_handler=_job_riot_request_event_handler(store, job_id)
@@ -94,39 +102,80 @@ async def run_profile_fetch(
         await store.update_progress(job_id, progress)
 
         puuid = _puuid_from_account(account)
+        history_match_ids = await resolved_match_store.get_player_match_ids(puuid)
+        known_match_ids = set(history_match_ids)
+        matches.update(await resolved_match_store.get_matches(history_match_ids))
         summoner = params.summoner
         if summoner is None:
             summoner = await _fetch_summoner(riot_client, params, puuid)
         progress.players_processed = 1
         await store.update_progress(job_id, progress)
 
-        match_ids = params.match_ids
-        if match_ids is None:
-            match_ids = await _fetch_match_ids(riot_client, params, puuid)
-        progress.match_ids_discovered = len(match_ids)
-        unique_match_ids = _unique_match_ids(match_ids)
-        progress.duplicate_match_ids_skipped = len(match_ids) - len(unique_match_ids)
-        progress.unique_match_ids = len(unique_match_ids)
-        await store.update_progress(job_id, progress)
-
-        for match_id in unique_match_ids:
-            match_payload = await riot_client.get_match_v5(
-                f"/lol/match/v5/matches/{match_id}",
-                regional_route=params.regional_route,
-                rate_limit_audience=RiotRateLimitAudience.AUTOMATIC,
+        if params.match_ids is not None:
+            await _record_and_process_match_id_page(
+                riot_client=riot_client,
+                store=store,
+                job_id=job_id,
+                params=params,
+                progress=progress,
+                account=account,
+                summoner=summoner,
+                page_match_ids=params.match_ids,
+                unique_match_ids=unique_match_ids,
+                seen_match_ids=seen_match_ids,
+                matches=matches,
+                errors=errors,
+                match_store=resolved_match_store,
+                puuid=puuid,
+                known_match_ids=known_match_ids,
+                history_match_ids=history_match_ids,
             )
-            if not isinstance(match_payload, dict):
-                msg = f"Match detail for {match_id} did not return an object."
-                raise ValueError(msg)
-            matches[match_id] = cast(dict[str, Any], match_payload)
-            progress.matches_fetched += 1
-            await store.update_progress(job_id, progress)
+        else:
+            start = 0
+            remaining = params.match_count
+            while remaining is None or remaining > 0:
+                count = (
+                    MATCH_ID_PAGE_SIZE if remaining is None else min(MATCH_ID_PAGE_SIZE, remaining)
+                )
+                page_match_ids = await _fetch_match_id_page(
+                    riot_client,
+                    params,
+                    puuid,
+                    start=start,
+                    count=count,
+                )
+                progress.match_id_pages_fetched += 1
+                if page_match_ids:
+                    progress.match_id_pages_with_results += 1
+                reached_known_match = await _record_and_process_match_id_page(
+                    riot_client=riot_client,
+                    store=store,
+                    job_id=job_id,
+                    params=params,
+                    progress=progress,
+                    account=account,
+                    summoner=summoner,
+                    page_match_ids=page_match_ids,
+                    unique_match_ids=unique_match_ids,
+                    seen_match_ids=seen_match_ids,
+                    matches=matches,
+                    errors=errors,
+                    match_store=resolved_match_store,
+                    puuid=puuid,
+                    known_match_ids=known_match_ids,
+                    history_match_ids=history_match_ids,
+                )
+                if reached_known_match or len(page_match_ids) < count:
+                    break
+                start += len(page_match_ids)
+                if remaining is not None:
+                    remaining -= len(page_match_ids)
 
     return ProfileFetchResult(
         summary=progress,
         account=account,
         summoner=summoner,
-        match_ids=unique_match_ids,
+        match_ids=_merge_match_ids(unique_match_ids, history_match_ids),
         matches=matches,
         errors=errors,
     )
@@ -170,24 +219,135 @@ async def _fetch_summoner(
     return cast(dict[str, Any], summoner_payload)
 
 
-async def _fetch_match_ids(
+async def _fetch_match_id_page(
     riot_client: ProfileRiotApiClient,
     params: ProfileFetchParams,
     puuid: str,
     *,
+    start: int,
+    count: int,
     wait_for_rate_limit: bool = True,
 ) -> list[str]:
     match_ids_payload = await riot_client.get_match_v5(
         f"/lol/match/v5/matches/by-puuid/{puuid}/ids",
         regional_route=params.regional_route,
-        params={"start": 0, "count": params.match_count},
+        params={"start": start, "count": count},
         rate_limit_audience=RiotRateLimitAudience.MANUAL,
         wait_for_rate_limit=wait_for_rate_limit,
+        bypass_cache=True,
     )
     if not isinstance(match_ids_payload, list):
         msg = "Match ID response did not return a list."
         raise ValueError(msg)
     return [match_id for match_id in match_ids_payload if isinstance(match_id, str) and match_id]
+
+
+async def _record_and_process_match_id_page(
+    *,
+    riot_client: ProfileRiotApiClient,
+    store: JobStore,
+    job_id: str,
+    params: ProfileFetchParams,
+    progress: JobProgress,
+    account: dict[str, Any],
+    summoner: dict[str, Any],
+    page_match_ids: list[str],
+    unique_match_ids: list[str],
+    seen_match_ids: set[str],
+    matches: dict[str, dict[str, Any]],
+    errors: list[JobError],
+    match_store: MatchStore,
+    puuid: str,
+    known_match_ids: set[str],
+    history_match_ids: list[str],
+) -> bool:
+    page_unique_match_ids: list[str] = []
+    reached_known_match = False
+    progress.match_ids_discovered += len(page_match_ids)
+    for match_id in page_match_ids:
+        if match_id in seen_match_ids:
+            progress.duplicate_match_ids_skipped += 1
+            continue
+        if match_id in known_match_ids:
+            reached_known_match = True
+            continue
+        seen_match_ids.add(match_id)
+        unique_match_ids.append(match_id)
+        page_unique_match_ids.append(match_id)
+    progress.unique_match_ids = len(unique_match_ids)
+    await store.update_progress(job_id, progress)
+    await _update_partial_result(
+        store=store,
+        job_id=job_id,
+        progress=progress,
+        account=account,
+        summoner=summoner,
+        match_ids=_merge_match_ids(unique_match_ids, history_match_ids),
+        matches=matches,
+        errors=errors,
+    )
+
+    stored_matches = await match_store.get_matches(page_unique_match_ids)
+    for match_id in page_unique_match_ids:
+        match_payload = stored_matches.get(match_id)
+        if match_payload is None:
+            fetched_payload = await riot_client.get_match_v5(
+                f"/lol/match/v5/matches/{match_id}",
+                regional_route=params.regional_route,
+                rate_limit_audience=RiotRateLimitAudience.AUTOMATIC,
+            )
+            if not isinstance(fetched_payload, dict):
+                msg = f"Match detail for {match_id} did not return an object."
+                raise ValueError(msg)
+            match_payload = cast(dict[str, Any], fetched_payload)
+            await match_store.save_match(
+                match_id,
+                regional_route=str(params.regional_route),
+                payload=match_payload,
+            )
+        matches[match_id] = match_payload
+        progress.matches_fetched += 1
+        await store.update_progress(job_id, progress)
+        await _update_partial_result(
+            store=store,
+            job_id=job_id,
+            progress=progress,
+            account=account,
+            summoner=summoner,
+            match_ids=_merge_match_ids(unique_match_ids, history_match_ids),
+            matches=matches,
+            errors=errors,
+        )
+    await match_store.link_player_matches(puuid, page_unique_match_ids)
+    return reached_known_match
+
+
+def _merge_match_ids(new_match_ids: list[str], history_match_ids: list[str]) -> list[str]:
+    return list(dict.fromkeys([*new_match_ids, *history_match_ids]))
+
+
+async def _update_partial_result(
+    *,
+    store: JobStore,
+    job_id: str,
+    progress: JobProgress,
+    account: dict[str, Any],
+    summoner: dict[str, Any],
+    match_ids: list[str],
+    matches: dict[str, dict[str, Any]],
+    errors: list[JobError],
+) -> None:
+    await store.update_result(
+        job_id,
+        result=ProfileFetchResult(
+            summary=progress.model_copy(deep=True),
+            account=account,
+            summoner=summoner,
+            match_ids=match_ids,
+            matches=matches.copy(),
+            errors=[error.model_copy(deep=True) for error in errors],
+        ),
+    )
 
 
 def _puuid_from_account(account: dict[str, Any]) -> str:
@@ -196,17 +356,6 @@ def _puuid_from_account(account: dict[str, Any]) -> str:
         msg = "Account-V1 response did not include a PUUID."
         raise ValueError(msg)
     return puuid
-
-
-def _unique_match_ids(match_ids: list[str]) -> list[str]:
-    unique_match_ids: list[str] = []
-    seen: set[str] = set()
-    for match_id in match_ids:
-        if match_id in seen:
-            continue
-        seen.add(match_id)
-        unique_match_ids.append(match_id)
-    return unique_match_ids
 
 
 def _path_segment(value: str) -> str:
