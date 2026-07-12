@@ -9,6 +9,10 @@ class Settings(BaseSettings):
 
     app_name: str = Field(default="League API", alias="APP_NAME")
     app_env: str = Field(default="development", alias="APP_ENV")
+    experimental_frontend_enabled: bool = Field(
+        default=False,
+        alias="EXPERIMENTAL_FRONTEND_ENABLED",
+    )
     riot_api_key: str | None = Field(default=None, alias="RIOT_API_KEY")
     default_platform_route: str = Field(default="oc1", alias="DEFAULT_PLATFORM_ROUTE")
     default_regional_route: str = Field(default="sea", alias="DEFAULT_REGIONAL_ROUTE")

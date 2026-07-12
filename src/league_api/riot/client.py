@@ -142,6 +142,7 @@ class RiotClient:
         params: dict[str, int | str | None] | None = None,
         rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
         wait_for_rate_limit: bool = True,
+        bypass_cache: bool = False,
     ) -> Any:
         return await self._get_json(
             get_regional_base_url(regional_route),
@@ -149,6 +150,7 @@ class RiotClient:
             params=params,
             rate_limit_audience=rate_limit_audience,
             wait_for_rate_limit=wait_for_rate_limit,
+            bypass_cache=bypass_cache,
         )
 
     async def get_account_v1(
@@ -210,6 +212,7 @@ class RiotClient:
         params: dict[str, int | str | None] | None = None,
         rate_limit_audience: RiotRateLimitAudience = RiotRateLimitAudience.MANUAL,
         wait_for_rate_limit: bool = True,
+        bypass_cache: bool = False,
     ) -> Any:
         client = self._ensure_client()
         _last_cache_status.set(None)
@@ -227,7 +230,9 @@ class RiotClient:
             path=path,
             params=cast(dict[str, int | str | None] | None, filtered_params),
         )
-        if not self.cache_enabled:
+        if bypass_cache:
+            self._set_cache_headers("bypass", read="bypass")
+        elif not self.cache_enabled:
             if self.settings is not None and self.settings.cache_enabled:
                 self._set_cache_headers("bypass", read="unavailable", write="unavailable")
             else:

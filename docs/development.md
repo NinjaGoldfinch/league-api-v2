@@ -101,6 +101,9 @@ Queue a profile fetch by Riot ID:
 curl -X POST "http://localhost:8000/profiles/fetch?riot_id=GAME_NAME%23TAG_LINE&account_regional_route=asia&platform_route=oc1&regional_route=sea"
 ```
 
+Repeated fetch requests for the same Riot ID and route reuse an existing queued
+or running job.
+
 Read a cached profile with RFC 10008 `QUERY` when you want a structured JSON
 body instead of URL query parameters:
 
@@ -109,6 +112,30 @@ curl -X QUERY "http://localhost:8000/profiles/fetch" \
   -H "Content-Type: application/json" \
   -d '{"riot_id":"GAME_NAME#TAG_LINE","account_regional_route":"asia","platform_route":"oc1","regional_route":"sea"}'
 ```
+
+Read the frontend-friendly composed profile view without starting work:
+
+```bash
+curl "http://localhost:8000/profiles/by-riot-id/GAME_NAME/TAG_LINE?account_regional_route=asia&platform_route=oc1&regional_route=sea&match_start=0&match_limit=15"
+curl -X QUERY "http://localhost:8000/profiles/by-riot-id" \
+  -H "Content-Type: application/json" \
+  -d '{"riot_id":"GAME_NAME#TAG_LINE","account_regional_route":"asia","platform_route":"oc1","regional_route":"sea","match_start":0,"match_limit":15}'
+```
+
+The composed view returns at most 15 compact match summaries by default and
+caps `match_limit` at 50. Use the response `matches_pagination.next_start` as
+the next `match_start` to load every fetched match without returning the whole
+history in one response.
+
+Profile lifecycle information is grouped by purpose: `status` is the concise
+reader-facing lifecycle (`missing`, `populating`, `ready`, `refreshing`, or
+`failed`), `data_summary` describes which resources and match details are
+available, and `progress` contains live counters and estimates for active work.
+`diagnostics` keeps cache states and full active/latest job records—including
+waits, errors, retained events, and request estimates—out of the primary status
+summary. `status.operation` is `initial_population` for a profile without a
+previous successful job and `refresh` when existing successful data is being
+updated.
 
 Only `GET` is supported for mirrored Riot endpoints. Use `/docs` to inspect the
 full current local OpenAPI documentation.
@@ -131,9 +158,10 @@ List active jobs or expand to all retained job details:
 ```bash
 curl "http://localhost:8000/jobs/status"
 curl "http://localhost:8000/jobs/status?running_only=false&verbose=true&include_events=true&include_result=true"
+curl "http://localhost:8000/jobs/status?status=queued&status=running&job_type=profile_fetch&riot_id=GAME_NAME%23TAG_LINE&limit=25"
 curl -X QUERY "http://localhost:8000/jobs/status" \
   -H "Content-Type: application/json" \
-  -d '{"running_only":false,"verbose":true,"include_events":true,"include_result":true}'
+  -d '{"running_only":false,"status":["succeeded"],"job_type":"profile_fetch","riot_id":"GAME_NAME#TAG_LINE","limit":25}'
 ```
 
 Job responses include a `details` object with the Riot source, queue, tier,
@@ -143,6 +171,8 @@ remaining Riot request counts, and `estimated_completed_at` when there is enough
 progress to project a rough finish time. The estimate uses the slower of
 observed request pace and the configured Riot app rate limit, plus any active
 rate-limit wait.
+List responses include `limit`, `has_more`, and `next_cursor`; pass
+`next_cursor` back as `cursor` to request the next page.
 
 When the Riot client is waiting on rate limits, job responses include
 `current_wait.resume_at` plus recent `events` entries for request start,

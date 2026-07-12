@@ -31,6 +31,8 @@ class LadderType(StrEnum):
 class JobProgress(StrictBaseModel):
     players_discovered: int = 0
     players_processed: int = 0
+    match_id_pages_fetched: int = 0
+    match_id_pages_with_results: int = 0
     match_ids_discovered: int = 0
     unique_match_ids: int = 0
     duplicate_match_ids_skipped: int = 0
@@ -62,8 +64,10 @@ class ProfileJobDetails(StrictBaseModel):
     account_regional_route: RiotAccountRegionalRoute
     platform_route: RiotPlatformRoute
     regional_route: RiotRegionalRoute
-    match_count: int
+    match_count: int | None
     match_id_request_count: int
+    match_id_page_request_count: int
+    match_id_pages_with_results: int
     match_detail_request_count: int
 
 
@@ -131,7 +135,7 @@ class ProfileFetchParams(StrictBaseModel):
     account_regional_route: RiotAccountRegionalRoute = RiotAccountRegionalRoute.ASIA
     platform_route: RiotPlatformRoute = RiotPlatformRoute.OC1
     regional_route: RiotRegionalRoute = RiotRegionalRoute.SEA
-    match_count: int = Field(default=20, ge=20, le=20)
+    match_count: int | None = Field(default=None, ge=1, le=1000)
     account: dict[str, Any] | None = None
     summoner: dict[str, Any] | None = None
     match_ids: list[str] | None = None

@@ -11,6 +11,7 @@ from league_api.jobs.models import (
     LadderType,
 )
 from league_api.jobs.store import JobStore
+from league_api.matches.store import InMemoryMatchStore, MatchStore
 from league_api.riot.client import RiotClient, RiotRequestEvent, RiotRequestEventHandler
 from league_api.riot.rate_limiter import RiotRateLimitAudience
 from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
@@ -70,13 +71,16 @@ async def run_ladder_ingestion(
     job_id: str,
     *,
     riot_client_factory: RiotClientFactory = _default_riot_client_factory,
+    match_store: MatchStore | None = None,
 ) -> LadderIngestionResult:
+    resolved_match_store = match_store or InMemoryMatchStore()
     progress = JobProgress()
     errors: list[JobError] = []
     player_puuids: list[str] = []
     match_ids: list[str] = []
     seen_match_ids: set[str] = set()
     matches: dict[str, dict[str, Any]] = {}
+    player_match_ids_by_puuid: dict[str, list[str]] = {}
 
     async with riot_client_factory(
         request_event_handler=_job_riot_request_event_handler(store, job_id)
@@ -102,6 +106,7 @@ async def run_ladder_ingestion(
                 progress.players_processed += 1
                 await store.update_progress(job_id, progress)
                 continue
+            player_match_ids_by_puuid[puuid] = player_match_ids
 
             progress.match_ids_discovered += len(player_match_ids)
             for match_id in player_match_ids:
@@ -115,18 +120,30 @@ async def run_ladder_ingestion(
             progress.unique_match_ids = len(match_ids)
             await store.update_progress(job_id, progress)
 
+        stored_matches = await resolved_match_store.get_matches(match_ids)
         for match_id in match_ids:
-            match_payload = await riot_client.get_match_v5(
-                f"/lol/match/v5/matches/{match_id}",
-                regional_route=params.regional_route,
-                rate_limit_audience=RiotRateLimitAudience.AUTOMATIC,
-            )
-            if not isinstance(match_payload, dict):
-                msg = f"Match detail for {match_id} did not return an object."
-                raise ValueError(msg)
-            matches[match_id] = cast(dict[str, Any], match_payload)
+            match_payload = stored_matches.get(match_id)
+            if match_payload is None:
+                fetched_payload = await riot_client.get_match_v5(
+                    f"/lol/match/v5/matches/{match_id}",
+                    regional_route=params.regional_route,
+                    rate_limit_audience=RiotRateLimitAudience.AUTOMATIC,
+                )
+                if not isinstance(fetched_payload, dict):
+                    msg = f"Match detail for {match_id} did not return an object."
+                    raise ValueError(msg)
+                match_payload = cast(dict[str, Any], fetched_payload)
+                await resolved_match_store.save_match(
+                    match_id,
+                    regional_route=str(params.regional_route),
+                    payload=match_payload,
+                )
+            matches[match_id] = match_payload
             progress.matches_fetched += 1
             await store.update_progress(job_id, progress)
+
+        for puuid, player_match_ids in player_match_ids_by_puuid.items():
+            await resolved_match_store.link_player_matches(puuid, player_match_ids)
 
     return LadderIngestionResult(
         summary=progress,

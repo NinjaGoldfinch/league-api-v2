@@ -14,6 +14,8 @@ from league_api.jobs.models import (
     JobWait,
     LadderIngestionParams,
     LadderIngestionResult,
+    ProfileFetchParams,
+    ProfileFetchResult,
 )
 from league_api.jobs.queue import InMemoryJobQueue
 from league_api.jobs.store import InMemoryJobStore
@@ -66,6 +68,8 @@ def test_start_ladder_ingestion_job_returns_job_id_with_defaults() -> None:
     assert body["progress"] == {
         "players_discovered": 0,
         "players_processed": 0,
+        "match_id_pages_fetched": 0,
+        "match_id_pages_with_results": 0,
         "match_ids_discovered": 0,
         "unique_match_ids": 0,
         "duplicate_match_ids_skipped": 0,
@@ -265,6 +269,123 @@ def test_list_job_status_verbose_flags_include_deeper_job_details() -> None:
     assert query_body.pop("generated_at")
     assert body.pop("generated_at")
     assert query_body == body
+
+
+def test_list_job_status_supports_cursor_pagination() -> None:
+    store = InMemoryJobStore()
+    fake_queue = FakeJobQueue()
+    app = create_app()
+    app.dependency_overrides[get_job_store] = lambda: store
+    app.dependency_overrides[get_job_queue] = lambda: cast(InMemoryJobQueue, fake_queue)
+    jobs = [
+        asyncio.run(
+            store.create_job(
+                job_type=JobType.LADDER_INGESTION,
+                params=LadderIngestionParams(match_count=match_count),
+            )
+        )
+        for match_count in (5, 10, 15)
+    ]
+
+    try:
+        with TestClient(app) as test_client:
+            first_response = test_client.get("/jobs/status?limit=2")
+            first_body = first_response.json()
+            second_response = test_client.get(
+                "/jobs/status",
+                params={"limit": 2, "cursor": first_body["next_cursor"]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first_response.status_code == 200
+    assert first_body["limit"] == 2
+    assert first_body["has_more"] is True
+    assert first_body["next_cursor"]
+    assert [job["job_id"] for job in first_body["jobs"]] == [
+        jobs[2].job_id,
+        jobs[1].job_id,
+    ]
+
+    assert second_response.status_code == 200
+    second_body = second_response.json()
+    assert second_body["has_more"] is False
+    assert second_body["next_cursor"] is None
+    assert [job["job_id"] for job in second_body["jobs"]] == [jobs[0].job_id]
+
+
+def test_list_job_status_filters_by_status_type_and_riot_id() -> None:
+    store = InMemoryJobStore()
+    fake_queue = FakeJobQueue()
+    app = create_app()
+    app.dependency_overrides[get_job_store] = lambda: store
+    app.dependency_overrides[get_job_queue] = lambda: cast(InMemoryJobQueue, fake_queue)
+    matching_job = asyncio.run(
+        store.create_job(
+            job_type=JobType.PROFILE_FETCH,
+            params=ProfileFetchParams(game_name="GameName", tag_line="OCE"),
+        )
+    )
+    other_profile_job = asyncio.run(
+        store.create_job(
+            job_type=JobType.PROFILE_FETCH,
+            params=ProfileFetchParams(game_name="Other", tag_line="OCE"),
+        )
+    )
+    ladder_job = asyncio.run(
+        store.create_job(
+            job_type=JobType.LADDER_INGESTION,
+            params=LadderIngestionParams(),
+        )
+    )
+    asyncio.run(
+        store.mark_succeeded(
+            matching_job.job_id,
+            result=ProfileFetchResult(
+                summary=JobProgress(),
+                account={"puuid": "puuid-1", "gameName": "GameName", "tagLine": "OCE"},
+                summoner={"puuid": "puuid-1", "summonerLevel": 100},
+                match_ids=[],
+                matches={},
+            ),
+        )
+    )
+
+    try:
+        with TestClient(app) as test_client:
+            get_response = test_client.get(
+                "/jobs/status",
+                params={
+                    "running_only": False,
+                    "status": "succeeded",
+                    "job_type": "profile_fetch",
+                    "riot_id": "gamename#oce",
+                },
+            )
+            query_response = test_client.request(
+                "QUERY",
+                "/jobs/status",
+                json={
+                    "running_only": False,
+                    "status": ["queued"],
+                    "job_type": "profile_fetch",
+                    "riot_id": "other#oce",
+                    "limit": 10,
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_response.status_code == 200
+    get_body = get_response.json()
+    assert [job["job_id"] for job in get_body["jobs"]] == [matching_job.job_id]
+    assert get_body["jobs"][0]["status"] == "succeeded"
+    assert get_body["jobs"][0]["job_type"] == "profile_fetch"
+
+    assert query_response.status_code == 200
+    query_body = query_response.json()
+    assert [job["job_id"] for job in query_body["jobs"]] == [other_profile_job.job_id]
+    assert ladder_job.job_id not in {job["job_id"] for job in query_body["jobs"]}
 
 
 def test_query_job_status_validates_query_json_contract() -> None:

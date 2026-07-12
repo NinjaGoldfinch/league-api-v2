@@ -8,16 +8,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from league_api.api.routes.account_v1 import router as account_v1_router
 from league_api.api.routes.jobs import router as jobs_router
 from league_api.api.routes.league_v4 import router as league_v4_router
+from league_api.api.routes.manager import router as manager_router
 from league_api.api.routes.match_v5 import router as match_v5_router
 from league_api.api.routes.profiles import router as profiles_router
 from league_api.api.routes.summoner_v4 import router as summoner_v4_router
 from league_api.core.config import get_settings
 from league_api.db import create_async_engine_from_url
+from league_api.experimental_frontend import register_experimental_frontend
 from league_api.jobs.ingestion import run_ladder_ingestion
 from league_api.jobs.postgres_store import PostgresJobStore
 from league_api.jobs.profile import run_profile_fetch
 from league_api.jobs.queue import InMemoryJobQueue
 from league_api.jobs.store import InMemoryJobStore
+from league_api.matches.store import InMemoryMatchStore, PostgresMatchStore
 from league_api.redis.coordinator import RedisJobLockCoordinator, create_redis_client
 from league_api.riot.cache import InMemoryRiotCacheStore
 from league_api.riot.client import RiotClient, RiotRequestEventHandler
@@ -51,6 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else None
     )
     lock_coordinator = RedisJobLockCoordinator(redis_client) if redis_client is not None else None
+    match_store = PostgresMatchStore(db_engine) if db_engine is not None else InMemoryMatchStore()
     riot_rate_limiter = (
         RedisRiotRateLimitManager(
             redis_client=redis_client,
@@ -90,15 +94,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ladder_ingestion_handler=partial(
             run_ladder_ingestion,
             riot_client_factory=riot_client_factory,
+            match_store=match_store,
         ),
-        profile_fetch_handler=partial(run_profile_fetch, riot_client_factory=riot_client_factory),
+        profile_fetch_handler=partial(
+            run_profile_fetch,
+            riot_client_factory=riot_client_factory,
+            match_store=match_store,
+        ),
         lock_coordinator=lock_coordinator,
     )
     app.state.job_store = job_store
     app.state.job_queue = job_queue
     app.state.riot_cache_store = riot_cache_store
     app.state.riot_rate_limiter = riot_rate_limiter
+    app.state.match_store = match_store
     job_queue.start()
+    await job_queue.recover_queued_jobs()
     try:
         yield
     finally:
@@ -126,6 +137,9 @@ def create_app() -> FastAPI:
     app.include_router(league_v4_router)
     app.include_router(summoner_v4_router)
     app.include_router(profiles_router)
+    if settings.experimental_frontend_enabled:
+        app.include_router(manager_router)
+        register_experimental_frontend(app)
     return app
 
 

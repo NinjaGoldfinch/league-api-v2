@@ -32,6 +32,29 @@ class PostgresRiotCacheStore:
             stale_until=_aware(cast(datetime, row["stale_until"])),
         )
 
+    async def count(self) -> int:
+        from sqlalchemy import text
+
+        async with self._engine.begin() as conn:
+            value = await conn.scalar(text("select count(*) from riot_response_cache"))
+        return int(value or 0)
+
+    async def delete(self, cache_key: str) -> bool:
+        from sqlalchemy import text
+
+        query = text("delete from riot_response_cache where cache_key = :cache_key")
+        async with self._engine.begin() as conn:
+            result = await conn.execute(query, {"cache_key": cache_key})
+        return bool(result.rowcount)
+
+    async def prune_expired(self, *, now: datetime | None = None) -> int:
+        from sqlalchemy import text
+
+        query = text("delete from riot_response_cache where stale_until < :snapshot_at")
+        async with self._engine.begin() as conn:
+            result = await conn.execute(query, {"snapshot_at": now or datetime.now(UTC)})
+        return int(result.rowcount or 0)
+
     async def put(
         self,
         *,
@@ -74,7 +97,18 @@ class PostgresRiotCacheStore:
             bindparam("payload", type_=JSONB),
             bindparam("headers", type_=JSONB),
         )
+        prune_query = text(
+            """
+            delete from riot_response_cache
+            where stale_until < :snapshot_at
+              and cache_key <> :cache_key
+            """
+        )
         async with self._engine.begin() as conn:
+            await conn.execute(
+                prune_query,
+                {"snapshot_at": fetched_at, "cache_key": key.cache_key},
+            )
             await conn.execute(
                 query,
                 {

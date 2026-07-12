@@ -61,6 +61,44 @@ def test_cache_key_normalizes_param_order_and_drops_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cache_put_prunes_entries_past_stale_window() -> None:
+    store = InMemoryRiotCacheStore()
+    old_key = build_riot_cache_key(
+        method="GET",
+        base_url="https://sea.api.riotgames.com",
+        path="/lol/match/v5/matches/OC1_OLD",
+        params=None,
+    )
+    now = datetime.now(UTC)
+    store._entries[old_key.cache_key] = RiotCacheEntry(
+        cache_key=old_key.cache_key,
+        payload={"old": True},
+        status_code=200,
+        headers={},
+        fetched_at=now - timedelta(minutes=3),
+        expires_at=now - timedelta(minutes=2),
+        stale_until=now - timedelta(minutes=1),
+    )
+    fresh_key = build_riot_cache_key(
+        method="GET",
+        base_url="https://sea.api.riotgames.com",
+        path="/lol/match/v5/matches/OC1_NEW",
+        params=None,
+    )
+    await store.put(
+        key=fresh_key,
+        payload={"new": True},
+        status_code=200,
+        headers={},
+        ttl_seconds=60,
+        stale_while_revalidate_seconds=10,
+    )
+
+    assert await store.get(old_key.cache_key) is None
+    assert await store.get(fresh_key.cache_key) is not None
+
+
+@pytest.mark.asyncio
 async def test_riot_client_cache_miss_writes_cache(respx_mock: respx.MockRouter) -> None:
     cache_store = InMemoryRiotCacheStore()
     route = respx_mock.get(
@@ -115,6 +153,53 @@ async def test_riot_client_returns_stale_cache_without_riot_call(
         payload = await client.get_match_v5("/lol/match/v5/matches/OC1_1")
 
     assert payload == {"metadata": {"matchId": "OC1_1"}}
+
+
+@pytest.mark.asyncio
+async def test_riot_client_bypass_cache_fetches_and_replaces_stale_payload(
+    respx_mock: respx.MockRouter,
+) -> None:
+    cache_store = InMemoryRiotCacheStore()
+    path = "/lol/match/v5/matches/by-puuid/player-1/ids"
+    cache_key = build_riot_cache_key(
+        method="GET",
+        base_url="https://sea.api.riotgames.com",
+        path=path,
+        params={"start": 0, "count": 100},
+    )
+    now = datetime.now(UTC)
+    cache_store._entries[cache_key.cache_key] = RiotCacheEntry(
+        cache_key=cache_key.cache_key,
+        payload=["OC1_OLD"],
+        status_code=200,
+        headers={},
+        fetched_at=now - timedelta(minutes=10),
+        expires_at=now - timedelta(minutes=5),
+        stale_until=now + timedelta(minutes=5),
+    )
+    route = respx_mock.get(
+        "https://sea.api.riotgames.com/lol/match/v5/matches/by-puuid/player-1/ids",
+        params={"start": 0, "count": 100},
+    ).mock(return_value=httpx.Response(200, json=["OC1_NEW", "OC1_OLD"]))
+
+    async with RiotClient(
+        api_key="test-key",
+        cache_store=cache_store,
+        cache_enabled=True,
+        cache_stale_while_revalidate_seconds=60,
+        settings=Settings(CACHE_ENABLED=True),
+    ) as client:
+        payload = await client.get_match_v5(
+            path,
+            params={"start": 0, "count": 100},
+            bypass_cache=True,
+        )
+
+    assert payload == ["OC1_NEW", "OC1_OLD"]
+    assert route.call_count == 1
+    cached = await cache_store.get(cache_key.cache_key)
+    assert cached is not None
+    assert cached.payload == payload
 
 
 @pytest.mark.asyncio

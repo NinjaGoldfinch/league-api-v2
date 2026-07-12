@@ -39,6 +39,12 @@ class RiotCacheEntry:
 class RiotCacheStore(Protocol):
     async def get(self, cache_key: str) -> RiotCacheEntry | None: ...
 
+    async def count(self) -> int: ...
+
+    async def delete(self, cache_key: str) -> bool: ...
+
+    async def prune_expired(self, *, now: datetime | None = None) -> int: ...
+
     async def put(
         self,
         *,
@@ -59,6 +65,26 @@ class InMemoryRiotCacheStore:
     async def get(self, cache_key: str) -> RiotCacheEntry | None:
         async with self._lock:
             return self._entries.get(cache_key)
+
+    async def count(self) -> int:
+        async with self._lock:
+            return len(self._entries)
+
+    async def delete(self, cache_key: str) -> bool:
+        async with self._lock:
+            return self._entries.pop(cache_key, None) is not None
+
+    async def prune_expired(self, *, now: datetime | None = None) -> int:
+        snapshot_at = now or datetime.now(UTC)
+        async with self._lock:
+            expired_keys = [
+                cache_key
+                for cache_key, entry in self._entries.items()
+                if entry.stale_until < snapshot_at
+            ]
+            for cache_key in expired_keys:
+                del self._entries[cache_key]
+            return len(expired_keys)
 
     async def put(
         self,
@@ -82,6 +108,13 @@ class InMemoryRiotCacheStore:
             stale_until=expires_at + timedelta(seconds=stale_while_revalidate_seconds),
         )
         async with self._lock:
+            expired_keys = [
+                cache_key
+                for cache_key, cached_entry in self._entries.items()
+                if cached_entry.stale_until < fetched_at
+            ]
+            for cache_key in expired_keys:
+                del self._entries[cache_key]
             self._entries[key.cache_key] = entry
         return entry
 

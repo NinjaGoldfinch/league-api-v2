@@ -166,19 +166,21 @@ curl "http://localhost:8000/lol/summoner/v4/summoners/by-puuid/PLAYER_PUUID?plat
 ## Profiles
 
 Profile fetches accept a Riot ID search value, resolve Account-V1 and
-Summoner-V4 data, fetch 20 recent Match-V5 IDs, and queue match detail fetching
-behind the existing job status endpoints. Profile work takes priority over
-automatic ladder ingestion.
+Summoner-V4 data, then queue paged Match-V5 ID discovery and match detail
+fetching behind the existing job status endpoints. Profile work takes priority
+over automatic ladder ingestion.
 
 ```bash
 curl -X POST "http://localhost:8000/profiles/fetch?riot_id=GAME_NAME%23TAG_LINE&account_regional_route=asia&platform_route=oc1&regional_route=sea"
 ```
 
-The response is always `202 Accepted`. When the initial Account-V1,
-Summoner-V4, and match-ID calls can run without waiting for manual rate-limit
-capacity, the response includes `account`, `summoner`, and `match_ids`. If those
-calls would need to wait, the response includes a queued `job_id` to poll with
-`GET /jobs/{job_id}` or `GET /jobs/{job_id}/result`.
+The response is always `202 Accepted`. When the initial Account-V1 and
+Summoner-V4 calls can run without waiting for manual rate-limit capacity, the
+response includes `account` and `summoner`. Match IDs and match summaries are
+filled in by the queued job and are visible through the composed profile read
+while the job runs.
+Repeated profile fetch requests for the same Riot ID and route return the
+existing queued or running job instead of creating duplicate work.
 
 Cached profile reads support both the browser-friendly query-string form and an
 RFC 10008 `QUERY` form with a JSON body:
@@ -188,6 +190,37 @@ curl "http://localhost:8000/profiles/fetch?riot_id=GAME_NAME%23TAG_LINE&account_
 curl -X QUERY "http://localhost:8000/profiles/fetch" \
   -H "Content-Type: application/json" \
   -d '{"riot_id":"GAME_NAME#TAG_LINE","account_regional_route":"asia","platform_route":"oc1","regional_route":"sea"}'
+```
+
+Frontend-facing profile reads are available as a composed read-only view. These
+endpoints never call Riot or enqueue work; they return cached data, compact
+match summaries from completed profile jobs, and the latest active or terminal
+profile job state. Its grouped `status` identifies `missing`, first-time
+`populating`, `ready`, later `refreshing`, and terminal `failed` states. Active
+work reports `initial_population` or `refresh` as its operation. `data_summary`
+separately reports resource availability, match counts, `last_updated_at`, and
+`refresh_after`; active counters and estimates live in `progress`, while cache,
+event, wait, error, and job details live in `diagnostics`. The bundled web client
+automatically populates missing profiles and refreshes ready profiles after
+`refresh_after` while continuing to display available data. Ordinary API reads
+remain side-effect free. Compact match summaries are paginated with
+`match_limit` defaulting to `15` and capped at `50`; use `match_start` to fetch
+later pages.
+
+Successful Match-V5 detail payloads are also written to permanent
+`riot_matches` storage and linked to players through `player_matches`. Profile
+refreshes fetch newest match-ID pages only until they encounter a previously
+known match, reuse permanently stored details, and merge newly discovered
+matches with the player's existing history. These durable match rows do not
+expire. The separate `riot_response_cache` remains disposable: entries are
+usable only through their TTL and stale window, and rows past that window are
+pruned during subsequent cache writes.
+
+```bash
+curl "http://localhost:8000/profiles/by-riot-id/GAME_NAME/TAG_LINE?account_regional_route=asia&platform_route=oc1&regional_route=sea&match_start=0&match_limit=15"
+curl -X QUERY "http://localhost:8000/profiles/by-riot-id" \
+  -H "Content-Type: application/json" \
+  -d '{"riot_id":"GAME_NAME#TAG_LINE","account_regional_route":"asia","platform_route":"oc1","regional_route":"sea","match_start":0,"match_limit":15}'
 ```
 
 Only `GET` is supported for mirrored Riot routes, because those paths already
@@ -212,9 +245,10 @@ List current job status:
 ```bash
 curl "http://localhost:8000/jobs/status"
 curl "http://localhost:8000/jobs/status?running_only=false&verbose=true&include_events=true&include_result=true"
+curl "http://localhost:8000/jobs/status?status=queued&status=running&job_type=profile_fetch&riot_id=GAME_NAME%23TAG_LINE&limit=25"
 curl -X QUERY "http://localhost:8000/jobs/status" \
   -H "Content-Type: application/json" \
-  -d '{"running_only":false,"verbose":true,"include_events":true,"include_result":true}'
+  -d '{"running_only":false,"status":["succeeded"],"job_type":"profile_fetch","riot_id":"GAME_NAME#TAG_LINE","limit":25}'
 ```
 
 Job status responses include a `details` object with the Riot source, platform
@@ -234,6 +268,9 @@ jobs by default; set `running_only=false` to include terminal jobs. Set
 `verbose=true` for params, errors, and the latest event, then add
 `include_events=true` or `include_result=true` when you need the retained event
 history or completed result payloads.
+List responses include `limit`, `has_more`, and `next_cursor`; pass the cursor
+back as `cursor` to request the next page. Explicit `status` filters override
+the default `running_only=true` queued/running filter.
 
 Job status also includes `current_wait` when a Riot rate-limit pause is active.
 That object includes `resume_at`, `wait_seconds`, `reason`, and the Riot path

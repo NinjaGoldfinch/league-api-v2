@@ -7,7 +7,9 @@ from typing import Any
 
 from league_api.jobs.models import (
     JobError,
+    JobRecord,
     JobResult,
+    JobStatus,
     JobType,
     LadderIngestionParams,
     LadderIngestionResult,
@@ -60,6 +62,16 @@ class InMemoryJobQueue:
             self._stopping = False
             self._worker_task = asyncio.create_task(self._run(), name="league-api-job-worker")
 
+    async def recover_queued_jobs(self) -> int:
+        """Restore durable queued jobs after the process-local queue is recreated."""
+        jobs = await self._store.list_jobs(statuses={JobStatus.QUEUED})
+        jobs.sort(key=lambda job: (job.created_at, job.job_id))
+        for job in jobs:
+            await self.enqueue(job.job_id, priority=_priority_for_job(job))
+        if jobs:
+            logger.info("Recovered %s queued job(s) from the job store.", len(jobs))
+        return len(jobs)
+
     async def stop(self) -> None:
         worker_task = self._worker_task
         if worker_task is None:
@@ -94,6 +106,9 @@ class InMemoryJobQueue:
         job = await self._store.get_job(job_id)
         if job is None:
             logger.warning("Skipping unknown job id %s.", job_id)
+            return
+        if job.status is not JobStatus.QUEUED:
+            logger.info("Skipping job %s because its status is %s.", job_id, job.status)
             return
 
         lock_token = await self._lock_coordinator.acquire_job_lock(job_id)
@@ -156,3 +171,12 @@ class InMemoryJobQueue:
                 error_type="CancelledError",
             ),
         )
+
+
+def _priority_for_job(job: JobRecord) -> int:
+    if job.job_type is JobType.PROFILE_FETCH:
+        params = job.params
+        if isinstance(params, ProfileFetchParams) and params.match_ids is not None:
+            return PROFILE_MATCH_DETAILS_PRIORITY
+        return PROFILE_FETCH_PRIORITY
+    return LADDER_INGESTION_PRIORITY
