@@ -11,6 +11,7 @@ RESERVED_ROOT_PATHS = frozenset(
         "docs",
         "favicon.ico",
         "jobs",
+        "ladders",
         "lol",
         "manager",
         "openapi.json",
@@ -31,6 +32,10 @@ def register_experimental_frontend(app: FastAPI) -> None:
     @app.get("/manager", include_in_schema=False)
     async def experimental_frontend_manager() -> HTMLResponse:
         return _render_shell(manager=True)
+
+    @app.get("/ladders", include_in_schema=False)
+    async def experimental_frontend_ladders() -> HTMLResponse:
+        return _render_shell(ladders=True)
 
     @app.get("/{profile_slug:path}", include_in_schema=False)
     async def experimental_frontend_profile(profile_slug: str) -> HTMLResponse:
@@ -73,9 +78,13 @@ def parse_profile_slug(profile_slug: str) -> dict[str, str] | None:
     }
 
 
-def _render_shell(*, profile: dict[str, str] | None = None, manager: bool = False) -> HTMLResponse:
+def _render_shell(
+    *, profile: dict[str, str] | None = None, manager: bool = False, ladders: bool = False
+) -> HTMLResponse:
     config: dict[str, Any] = {
-        "page": "manager" if manager else "profile" if profile is not None else "home",
+        "page": (
+            "manager" if manager else "ladders" if ladders else "profile" if profile else "home"
+        ),
         "profile": profile,
         "defaults": {
             "accountRegionalRoute": "asia",
@@ -85,7 +94,9 @@ def _render_shell(*, profile: dict[str, str] | None = None, manager: bool = Fals
         },
     }
     title = (
-        "Match database manager"
+        "Ranked ladder players"
+        if ladders
+        else "Match database manager"
         if manager
         else profile["riotId"]
         if profile is not None
@@ -305,6 +316,12 @@ _HTML_TEMPLATE = """<!doctype html>
       align-items: center;
       gap: 18px;
       padding: 18px;
+    }
+
+    .profile-status-actions {
+      display: grid;
+      justify-items: end;
+      gap: 8px;
     }
 
     .profile-icon {
@@ -563,6 +580,36 @@ _HTML_TEMPLATE = """<!doctype html>
         height: 68px;
       }
     }
+    .ladders { display: none; gap: 18px; }
+    body[data-page="ladders"] .ladders { display: grid; }
+    body[data-page="ladders"] .hero { display: none; }
+    .ladder-controls { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+    .ladder-controls select, .ladder-controls input, .ladder-controls button {
+      min-width: 0;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: white;
+    }
+    .ladder-pagination { display: flex; gap: 12px; align-items: center; justify-content: center; }
+    .ladder-pagination button, .ladder-pagination select { padding: 9px 14px; }
+    .ladder-player {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1.4fr) minmax(0, 2fr) auto;
+      gap: 14px;
+      align-items: center;
+    }
+    .ladder-player img, .ladder-icon-placeholder {
+      width: 48px;
+      height: 48px;
+      border-radius: 8px;
+      background: #e9eef5;
+    }
+    .ladder-player code { overflow-wrap: anywhere; color: var(--muted); }
+    @media (max-width: 760px) {
+      .ladder-controls { grid-template-columns: 1fr 1fr; }
+      .ladder-player { grid-template-columns: 48px 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -573,6 +620,7 @@ _HTML_TEMPLATE = """<!doctype html>
         <span>League API</span>
       </a>
       <div class="actions">
+        <a class="manager-link" href="/ladders">Ladders</a>
         <a class="manager-link" href="/manager">DB manager</a>
         <span class="nav-note">Experimental profile frontend</span>
       </div>
@@ -595,6 +643,51 @@ _HTML_TEMPLATE = """<!doctype html>
         <button type="submit">Open profile</button>
       </form>
       <div class="message" id="form-message" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="ladders" id="ladders-view" aria-label="Ranked ladder players">
+      <article class="panel">
+        <h1>Ranked ladder players</h1>
+        <p>
+          Fetch one ladder unit, persist every PUUID, and resolve Riot IDs.
+          Icons are cache-only.
+        </p>
+      </article>
+      <article class="panel ladder-controls">
+        <select id="ladder-tier" aria-label="Tier">
+          <option>CHALLENGER</option><option>GRANDMASTER</option><option>MASTER</option>
+          <option>DIAMOND</option><option>EMERALD</option><option>PLATINUM</option>
+          <option>GOLD</option><option>SILVER</option><option>BRONZE</option><option>IRON</option>
+        </select>
+        <select id="ladder-division" aria-label="Division">
+          <option>I</option><option>II</option><option>III</option><option>IV</option>
+        </select>
+        <input id="ladder-page" type="number" min="1" value="1" aria-label="Page">
+        <input id="ladder-search" placeholder="Riot ID or PUUID" aria-label="Search players">
+        <select id="ladder-mode" aria-label="Fetch mode">
+          <option value="ladder_only">Ladder only</option>
+          <option value="ladder_and_matches">Ladder + all matches</option>
+        </select>
+        <button id="ladder-load" type="button">View stored</button>
+        <button id="ladder-fetch" type="button">Fetch ladder</button>
+      </article>
+      <article class="panel ladder-pagination">
+        <button id="ladder-previous" type="button">Previous</button>
+        <span id="ladder-page-status">Page 1</span>
+        <button id="ladder-next" type="button">Next</button>
+        <select id="ladder-page-size" aria-label="Players per page">
+          <option>25</option><option selected>50</option><option>100</option><option>200</option>
+        </select>
+      </article>
+      <article class="panel">
+        <p id="ladder-message">Choose a ladder to view stored players.</p>
+      </article>
+      <section class="match-list" id="ladder-player-list" aria-label="Ladder players"></section>
+      <article class="panel">
+        <h2>Discovered matches</h2>
+        <p id="ladder-match-summary">No match references loaded.</p>
+      </article>
+      <section class="match-list" id="ladder-match-list" aria-label="Ladder matches"></section>
     </section>
 
     <section class="manager" id="manager-view" aria-label="Match database manager">
@@ -641,7 +734,10 @@ _HTML_TEMPLATE = """<!doctype html>
           <h2 id="profile-title">Profile</h2>
           <p id="profile-subtitle">Waiting for data.</p>
         </div>
-        <span class="status-pill" id="profile-status">Not started</span>
+        <div class="profile-status-actions">
+          <span class="status-pill" id="profile-status">Not started</span>
+          <button id="refresh-profile" type="button">Refresh profile</button>
+        </div>
       </article>
 
       <article class="panel progress" aria-label="Profile fetch progress">
@@ -692,6 +788,7 @@ _HTML_TEMPLATE = """<!doctype html>
     window.__LEAGUE_PROFILE_CONFIG__ = __APP_CONFIG__;
 
     const config = window.__LEAGUE_PROFILE_CONFIG__;
+    const PROFILE_REFRESH_LOCKOUT_MS = 60_000;
     const state = {
       dataDragonVersion: "15.13.1",
       jobId: null,
@@ -699,7 +796,9 @@ _HTML_TEMPLATE = """<!doctype html>
       profilePuuid: null,
       cachedProfile: null,
       jobResult: null,
-      matchPagination: null
+      matchPagination: null,
+      refreshLockTimer: null,
+      profileLifecycleState: null
     };
 
     const els = {
@@ -712,6 +811,7 @@ _HTML_TEMPLATE = """<!doctype html>
       profileTitle: document.getElementById("profile-title"),
       subtitle: document.getElementById("profile-subtitle"),
       status: document.getElementById("profile-status"),
+      refreshProfile: document.getElementById("refresh-profile"),
       icon: document.getElementById("profile-icon"),
       progressLabel: document.getElementById("progress-label"),
       progressPercent: document.getElementById("progress-percent"),
@@ -741,6 +841,165 @@ _HTML_TEMPLATE = """<!doctype html>
       list: document.getElementById("manager-match-list"),
       raw: document.getElementById("manager-raw")
     };
+
+    const ladderEls = {
+      tier: document.getElementById("ladder-tier"),
+      division: document.getElementById("ladder-division"),
+      page: document.getElementById("ladder-page"),
+      search: document.getElementById("ladder-search"),
+      mode: document.getElementById("ladder-mode"),
+      load: document.getElementById("ladder-load"),
+      fetch: document.getElementById("ladder-fetch"),
+      message: document.getElementById("ladder-message"),
+      list: document.getElementById("ladder-player-list"),
+      previous: document.getElementById("ladder-previous"),
+      next: document.getElementById("ladder-next"),
+      pageStatus: document.getElementById("ladder-page-status"),
+      pageSize: document.getElementById("ladder-page-size"),
+      matchSummary: document.getElementById("ladder-match-summary"),
+      matchList: document.getElementById("ladder-match-list")
+    };
+    let ladderPlayerOffset = 0;
+    let ladderSearchTimer = null;
+    let ladderRequestSequence = 0;
+
+    function ladderParams() {
+      const params = new URLSearchParams({
+        platform_route: config.defaults.platformRoute,
+        queue: "RANKED_SOLO_5x5",
+        tier: ladderEls.tier.value
+      });
+      if (!["CHALLENGER", "GRANDMASTER", "MASTER"].includes(ladderEls.tier.value)) {
+        params.set("division", ladderEls.division.value);
+        params.set("page", ladderEls.page.value);
+      }
+      return params;
+    }
+
+    async function loadLadderMatches() {
+      const page = await requestJson(`/ladders/matches?${ladderParams().toString()}`);
+      ladderEls.matchList.replaceChildren();
+      let duplicateCount = 0;
+      for (const match of page.matches) {
+        if (match.is_duplicate) duplicateCount += 1;
+        const row = document.createElement("article");
+        row.className = "panel ladder-player";
+        const state = document.createElement("strong");
+        state.textContent = match.detail_status === "stored" ? "Stored" : "ID only";
+        const matchId = document.createElement("code");
+        matchId.textContent = match.match_id;
+        const refs = document.createElement("span");
+        refs.textContent = [
+          match.player_count,
+          `ladder player reference${match.player_count === 1 ? "" : "s"}`
+        ].join(" ");
+        row.append(state, matchId, refs);
+        ladderEls.matchList.append(row);
+      }
+      ladderEls.matchSummary.textContent = [
+        `${page.total} unique IDs;`,
+        `${duplicateCount} duplicates on this page.`
+      ].join(" ");
+    }
+
+    function syncLadderControls() {
+      const apex = ["CHALLENGER", "GRANDMASTER", "MASTER"].includes(ladderEls.tier.value);
+      ladderEls.division.disabled = apex;
+      ladderEls.page.disabled = apex;
+    }
+
+    async function loadLadderPlayers(options = {}) {
+      const requestSequence = ++ladderRequestSequence;
+      const params = ladderParams();
+      if (ladderEls.search.value.trim()) params.set("search", ladderEls.search.value.trim());
+      const limit = Number(ladderEls.pageSize.value);
+      params.set("offset", String(ladderPlayerOffset));
+      params.set("limit", String(limit));
+      const page = await requestJson(`/ladders/players?${params.toString()}`);
+      if (requestSequence !== ladderRequestSequence) return;
+      ladderEls.list.replaceChildren();
+      for (const player of page.players) {
+        const row = document.createElement("article");
+        row.className = "panel ladder-player";
+        const icon = player.profile_icon_id == null
+          ? Object.assign(document.createElement("span"), { className: "ladder-icon-placeholder" })
+          : Object.assign(document.createElement("img"), {
+              src: profileIconUrl(player.profile_icon_id), alt: "Cached summoner icon"
+            });
+        const identity = document.createElement("strong");
+        identity.textContent = player.riot_id || "Riot ID unresolved";
+        const puuid = document.createElement("code");
+        puuid.textContent = player.puuid;
+        const stats = document.createElement("span");
+        stats.textContent = `${player.league_points} LP · ${player.wins}W ${player.losses}L`;
+        row.append(icon, identity, puuid, stats);
+        ladderEls.list.append(row);
+      }
+      ladderEls.message.textContent = [
+        `${page.total} stored player${page.total === 1 ? "" : "s"}.`,
+        "No Riot requests were made."
+      ].join(" ");
+      const currentPage = Math.floor(page.offset / page.limit) + 1;
+      const pageCount = Math.max(1, Math.ceil(page.total / page.limit));
+      ladderEls.pageStatus.textContent = `Page ${currentPage} of ${pageCount}`;
+      ladderEls.previous.disabled = page.offset === 0;
+      ladderEls.next.disabled = page.offset + page.players.length >= page.total;
+      if (options.includeMatches !== false) await loadLadderMatches();
+    }
+
+    let activeLadderJobId = null;
+
+    async function monitorLadderJob(jobId) {
+      activeLadderJobId = jobId;
+      ladderEls.fetch.disabled = true;
+      try {
+        let refreshTick = 0;
+        while (activeLadderJobId === jobId) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1800));
+          const status = await requestJson(`/jobs/${encodeURIComponent(jobId)}`);
+          const progress = status.progress;
+          ladderEls.message.textContent = [
+            status.estimate.description,
+            `${progress.players_processed}/${progress.players_discovered}`,
+            "Stored ladder data remains available while this runs."
+          ].join(" ");
+          refreshTick += 1;
+          if (status.status === "running" && refreshTick % 3 === 0) {
+            await loadLadderPlayers();
+          }
+          if (status.status === "failed") {
+            throw new Error(status.error?.message || "Ladder fetch failed.");
+          }
+          if (status.status === "succeeded") {
+            await loadLadderPlayers();
+            return;
+          }
+        }
+      } catch (error) {
+        ladderEls.message.textContent = error.message;
+      } finally {
+        if (activeLadderJobId === jobId) {
+          activeLadderJobId = null;
+          ladderEls.fetch.disabled = false;
+        }
+      }
+    }
+
+    async function fetchLadderPlayers() {
+      if (activeLadderJobId !== null) return;
+      ladderEls.fetch.disabled = true;
+      try {
+        const job = await requestJson(
+          `/jobs/ingestion/ladder-players?${ladderParams().toString()}&mode=${ladderEls.mode.value}`,
+          { method: "POST" }
+        );
+        ladderEls.message.textContent =
+          "Ladder fetch queued in the background. Stored data remains available.";
+        void monitorLadderJob(job.job_id);
+      } finally {
+        if (activeLadderJobId === null) ladderEls.fetch.disabled = false;
+      }
+    }
 
     function parseRiotId(value) {
       const trimmed = value.trim();
@@ -1155,6 +1414,72 @@ _HTML_TEMPLATE = """<!doctype html>
       return requestJson(`/profiles/fetch?${profileApiParams(profile)}`, { method: "POST" });
     }
 
+    function refreshLockKey(profile) {
+      return `league-profile-refresh:${profile.riotId.toLocaleLowerCase()}`;
+    }
+
+    function refreshLockedUntil(profile) {
+      try {
+        return Number(window.localStorage.getItem(refreshLockKey(profile))) || 0;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    function lockProfileRefresh(profile) {
+      const lockedUntil = Date.now() + PROFILE_REFRESH_LOCKOUT_MS;
+      try {
+        window.localStorage.setItem(refreshLockKey(profile), String(lockedUntil));
+      } catch (_) {
+        // The in-memory countdown still prevents repeated clicks in this page.
+      }
+      return lockedUntil;
+    }
+
+    function renderRefreshButton(profile) {
+      window.clearTimeout(state.refreshLockTimer);
+      state.refreshLockTimer = null;
+      const jobActive = ["populating", "refreshing"].includes(state.profileLifecycleState);
+      const secondsRemaining = Math.max(
+        0,
+        Math.ceil((refreshLockedUntil(profile) - Date.now()) / 1000)
+      );
+      els.refreshProfile.disabled = jobActive || secondsRemaining > 0;
+      els.refreshProfile.textContent = jobActive
+        ? "Refresh in progress"
+        : secondsRemaining > 0
+          ? `Refresh profile (${secondsRemaining}s)`
+          : "Refresh profile";
+      if (secondsRemaining > 0) {
+        state.refreshLockTimer = window.setTimeout(() => renderRefreshButton(profile), 1000);
+      }
+    }
+
+    async function queueProfileRefresh(profile) {
+      if (refreshLockedUntil(profile) > Date.now()) {
+        renderRefreshButton(profile);
+        return null;
+      }
+      lockProfileRefresh(profile);
+      renderRefreshButton(profile);
+      const job = await startProfileJob(profile);
+      if (!job.job_id) {
+        throw new Error("Profile job did not return a job id.");
+      }
+      state.jobId = job.job_id;
+      const nextState = state.profileLifecycleState === "missing" ? "populating" : "refreshing";
+      state.profileLifecycleState = nextState;
+      setStatus(
+        job.identity_status === "already_running"
+          ? "Refresh in progress"
+          : nextState === "populating"
+            ? "Populating profile"
+            : "Refreshing profile"
+      );
+      renderRefreshButton(profile);
+      return job;
+    }
+
     function renderCompactMatches(matches, options = {}) {
       if (!options.append) {
         els.matchList.replaceChildren();
@@ -1234,6 +1559,10 @@ _HTML_TEMPLATE = """<!doctype html>
       const summary = view.data_summary || {};
       const progressSnapshot = view.progress;
       const diagnostics = view.diagnostics || {};
+      state.profileLifecycleState = lifecycle.state || null;
+      if (config.profile) {
+        renderRefreshButton(config.profile);
+      }
       const account = view.account || {};
       const compactMatches = Array.isArray(view.matches) ? view.matches : [];
       const hasCompactMatches = compactMatches.length > 0;
@@ -1344,14 +1673,11 @@ _HTML_TEMPLATE = """<!doctype html>
           && new Date(dataSummary.refresh_after).getTime() <= Date.now();
         const shouldRefresh = !["populating", "refreshing"].includes(lifecycle.state)
           && (lifecycle.state === "missing" || refreshDue);
+        let refreshStarted = false;
         if (shouldRefresh) {
-          const job = await startProfileJob(profile);
-          if (!job.job_id) {
-            throw new Error("Profile job did not return a job id.");
-          }
-          state.jobId = job.job_id;
-          setStatus(job.identity_status === "already_running" ? "Job found" : "Job queued");
-          if (job.account || job.summoner || job.match_ids) {
+          const job = await queueProfileRefresh(profile);
+          refreshStarted = job !== null;
+          if (job && (job.account || job.summoner || job.match_ids)) {
             renderCachedProfile({
               identity_status: job.identity_status,
               account: job.account || {},
@@ -1360,7 +1686,7 @@ _HTML_TEMPLATE = """<!doctype html>
             });
           }
         }
-        if (["populating", "refreshing"].includes(lifecycle.state) || shouldRefresh) {
+        if (["populating", "refreshing"].includes(lifecycle.state) || refreshStarted) {
           await pollProfileView(profile);
         }
       } catch (error) {
@@ -1465,6 +1791,20 @@ _HTML_TEMPLATE = """<!doctype html>
       }
     });
 
+    els.refreshProfile.addEventListener("click", async () => {
+      if (!config.profile) return;
+      try {
+        const job = await queueProfileRefresh(config.profile);
+        if (job) {
+          await pollProfileView(config.profile);
+        }
+      } catch (error) {
+        setStatus("Refresh failed", "error");
+        els.jobNote.textContent = error.message;
+        renderRefreshButton(config.profile);
+      }
+    });
+
     els.loadMore.addEventListener("click", async () => {
       if (!config.profile || !state.matchPagination || state.matchPagination.next_start == null) {
         return;
@@ -1519,12 +1859,46 @@ _HTML_TEMPLATE = """<!doctype html>
       }
     });
 
+    ladderEls.tier.addEventListener("change", syncLadderControls);
+    ladderEls.load.addEventListener("click", () => {
+      ladderPlayerOffset = 0;
+      loadLadderPlayers().catch((error) => { ladderEls.message.textContent = error.message; });
+    });
+    ladderEls.search.addEventListener("input", () => {
+      ladderPlayerOffset = 0;
+      window.clearTimeout(ladderSearchTimer);
+      ladderSearchTimer = window.setTimeout(() => {
+        loadLadderPlayers({ includeMatches: false }).catch((error) => {
+          ladderEls.message.textContent = error.message;
+        });
+      }, 250);
+    });
+    ladderEls.previous.addEventListener("click", () => {
+      ladderPlayerOffset = Math.max(0, ladderPlayerOffset - Number(ladderEls.pageSize.value));
+      loadLadderPlayers().catch((error) => { ladderEls.message.textContent = error.message; });
+    });
+    ladderEls.next.addEventListener("click", () => {
+      ladderPlayerOffset += Number(ladderEls.pageSize.value);
+      loadLadderPlayers().catch((error) => { ladderEls.message.textContent = error.message; });
+    });
+    ladderEls.pageSize.addEventListener("change", () => {
+      ladderPlayerOffset = 0;
+      loadLadderPlayers().catch((error) => { ladderEls.message.textContent = error.message; });
+    });
+    ladderEls.fetch.addEventListener("click", () => {
+      fetchLadderPlayers().catch((error) => { ladderEls.message.textContent = error.message; });
+    });
+
     (async function boot() {
       await loadDataDragonVersion();
       if (config.page === "profile" && config.profile) {
         await loadProfile(config.profile);
       } else if (config.page === "manager") {
         await loadManager();
+      } else if (config.page === "ladders") {
+        els.body.dataset.page = "ladders";
+        syncLadderControls();
+        await loadLadderPlayers();
       } else {
         els.body.dataset.page = "home";
       }

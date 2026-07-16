@@ -21,11 +21,37 @@ class JobStatus(StrEnum):
 
 class JobType(StrEnum):
     LADDER_INGESTION = "ladder_ingestion"
+    LADDER_PLAYERS = "ladder_players"
     PROFILE_FETCH = "profile_fetch"
 
 
 class LadderType(StrEnum):
     CHALLENGER = "challenger"
+
+
+class RankedTier(StrEnum):
+    CHALLENGER = "CHALLENGER"
+    GRANDMASTER = "GRANDMASTER"
+    MASTER = "MASTER"
+    DIAMOND = "DIAMOND"
+    EMERALD = "EMERALD"
+    PLATINUM = "PLATINUM"
+    GOLD = "GOLD"
+    SILVER = "SILVER"
+    BRONZE = "BRONZE"
+    IRON = "IRON"
+
+
+class RankedDivision(StrEnum):
+    DIVISION_I = "I"
+    DIVISION_II = "II"
+    DIVISION_III = "III"
+    DIVISION_IV = "IV"
+
+
+class LadderFetchMode(StrEnum):
+    LADDER_ONLY = "ladder_only"
+    LADDER_AND_MATCHES = "ladder_and_matches"
 
 
 class JobProgress(StrictBaseModel):
@@ -38,6 +64,17 @@ class JobProgress(StrictBaseModel):
     duplicate_match_ids_skipped: int = 0
     matches_fetched: int = 0
     errors: int = 0
+    identities_resolved: int = 0
+    identities_reused: int = 0
+    identities_unresolved: int = 0
+    current_player_puuid: str | None = None
+    phase: str | None = None
+    current_match_id_start: int | None = None
+    match_id_pages_attempted: int = 0
+    match_id_pages_failed: int = 0
+    match_id_pages_retried: int = 0
+    duplicate_match_references: int = 0
+    match_details_reused: int = 0
 
 
 class LadderJobDetails(StrictBaseModel):
@@ -71,7 +108,23 @@ class ProfileJobDetails(StrictBaseModel):
     match_detail_request_count: int
 
 
-JobDetails = LadderJobDetails | ProfileJobDetails
+class LadderPlayersJobDetails(StrictBaseModel):
+    source: str
+    platform_route: RiotPlatformRoute
+    regional_route: RiotRegionalRoute
+    queue: LeagueQueue
+    queue_label: str
+    tier: RankedTier
+    division: RankedDivision | None
+    page: int | None
+    player_count: int
+    identities_resolved: int
+    identities_reused: int
+    identities_unresolved: int
+    mode: LadderFetchMode
+
+
+JobDetails = LadderJobDetails | LadderPlayersJobDetails | ProfileJobDetails
 
 
 class JobEstimate(StrictBaseModel):
@@ -145,6 +198,24 @@ class ProfileFetchParams(StrictBaseModel):
         return f"{self.game_name}#{self.tag_line}"
 
 
+class LadderPlayersParams(StrictBaseModel):
+    platform_route: RiotPlatformRoute = RiotPlatformRoute.OC1
+    account_regional_route: RiotAccountRegionalRoute = RiotAccountRegionalRoute.ASIA
+    regional_route: RiotRegionalRoute = RiotRegionalRoute.SEA
+    queue: LeagueQueue = LeagueQueue.RANKED_SOLO_5X5
+    tier: RankedTier = RankedTier.CHALLENGER
+    division: RankedDivision | None = None
+    page: int | None = Field(default=None, ge=1)
+    mode: LadderFetchMode = LadderFetchMode.LADDER_ONLY
+
+    def model_post_init(self, __context: Any) -> None:
+        apex = self.tier in {RankedTier.CHALLENGER, RankedTier.GRANDMASTER, RankedTier.MASTER}
+        if apex and (self.division is not None or self.page is not None):
+            raise ValueError("Apex ladders do not accept division or page.")
+        if not apex and (self.division is None or self.page is None):
+            raise ValueError("Lower-tier ladders require division and page.")
+
+
 class LadderIngestionResult(StrictBaseModel):
     summary: JobProgress
     player_puuids: list[str]
@@ -162,8 +233,15 @@ class ProfileFetchResult(StrictBaseModel):
     errors: list[JobError] = Field(default_factory=list)
 
 
-JobParams = LadderIngestionParams | ProfileFetchParams
-JobResult = LadderIngestionResult | ProfileFetchResult
+class LadderPlayersResult(StrictBaseModel):
+    summary: JobProgress
+    player_puuids: list[str]
+    match_ids: list[str] = Field(default_factory=list)
+    errors: list[JobError] = Field(default_factory=list)
+
+
+JobParams = LadderIngestionParams | LadderPlayersParams | ProfileFetchParams
+JobResult = LadderIngestionResult | LadderPlayersResult | ProfileFetchResult
 
 
 class JobRecord(StrictBaseModel):

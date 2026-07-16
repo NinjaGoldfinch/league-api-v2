@@ -54,6 +54,10 @@ Add a Riot development key to `.env`:
 RIOT_API_KEY=your-development-key
 ```
 
+For reachable deployments, also set `OPERATOR_API_TOKEN` and send it as a Bearer
+token or `X-Operator-Token` on profile refresh, ingestion, and manager mutation
+requests.
+
 Start FastAPI locally:
 
 ```bash
@@ -221,9 +225,11 @@ SHOW_RESPONSE_BODY=1 make test-endpoints
 ```
 
 When `DATABASE_URL` is configured, job state, progress, events, errors, and
-results are stored in PostgreSQL. When `REDIS_URL` is configured, the API uses
-Redis for job locks and shared Riot rate-limit coordination. Without those
-settings, tests and lightweight local runs can still use in-memory fallbacks.
+results are stored in PostgreSQL, and queued or abandoned running work is
+restored after restart. When `REDIS_URL` is configured, the API uses Redis for
+job locks and shared Riot rate-limit coordination. Manual profile and automatic
+ingestion work use separate process-local workers. Without those settings,
+tests and lightweight local runs can still use in-memory fallbacks.
 Riot mirror endpoints use the generic response cache when `CACHE_ENABLED=true`
 and expose `X-League-API-Cache: miss|hit|stale` without changing Riot JSON
 payloads.

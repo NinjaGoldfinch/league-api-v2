@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Any, cast
 from urllib.parse import quote
@@ -15,6 +15,7 @@ from league_api.api.routes.jobs import (
     get_job_store,
 )
 from league_api.api.routes.riot import RiotClientDependency
+from league_api.core.auth import require_operator_token
 from league_api.jobs.models import (
     JobEstimate,
     JobProgress,
@@ -32,6 +33,8 @@ from league_api.jobs.queue import (
     InMemoryJobQueue,
 )
 from league_api.jobs.store import JobStore
+from league_api.matches.store import MatchStore
+from league_api.players.store import PlayerIdentity, PlayerIdentityStore
 from league_api.riot.cache import RiotCacheEntry, RiotCacheStore, build_riot_cache_key
 from league_api.riot.client import RiotClient
 from league_api.riot.errors import (
@@ -204,8 +207,10 @@ class ProfileViewResponse(BaseModel):
     response_model=ProfileFetchResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Fetch a profile by Riot ID",
+    dependencies=[Depends(require_operator_token)],
 )
 async def fetch_profile(
+    request: Request,
     store: Annotated[JobStore, Depends(get_job_store)],
     job_queue: Annotated[InMemoryJobQueue, Depends(get_job_queue)],
     riot_client: Annotated[RiotClient, RiotClientDependency],
@@ -244,13 +249,6 @@ async def fetch_profile(
     )
     if active_job is not None:
         active_params = cast(ProfileFetchParams, active_job.params)
-        if active_job.status is JobStatus.QUEUED:
-            priority = (
-                PROFILE_MATCH_DETAILS_PRIORITY
-                if active_params.match_ids is not None
-                else PROFILE_FETCH_PRIORITY
-            )
-            await job_queue.enqueue(active_job.job_id, priority=priority)
         return ProfileFetchResponse(
             job_id=active_job.job_id,
             job_type=active_job.job_type,
@@ -266,11 +264,35 @@ async def fetch_profile(
     match_ids: list[str] | None = None
     identity_status = "queued"
 
+    identity_store = _optional_identity_store(request)
+    if identity_store is not None:
+        cached_identity = await identity_store.get_by_riot_id(
+            game_name, tag_line, max_age=timedelta(hours=24)
+        )
+        if cached_identity is not None:
+            account = {
+                "puuid": cached_identity.puuid,
+                "gameName": cached_identity.game_name,
+                "tagLine": cached_identity.tag_line,
+            }
+            identity_status = "cached"
+
     try:
         async with riot_client:
-            account = await _fetch_account_without_wait(riot_client, params)
+            if account is None:
+                account = await _fetch_account_without_wait(riot_client, params)
+                if identity_store is not None:
+                    await identity_store.upsert(
+                        PlayerIdentity(
+                            puuid=_puuid(account),
+                            game_name=game_name,
+                            tag_line=tag_line,
+                            observed_at=datetime.now(UTC),
+                        )
+                    )
             summoner = await _fetch_summoner_without_wait(riot_client, params, _puuid(account))
-            identity_status = "resolved"
+            if identity_status != "cached":
+                identity_status = "resolved"
     except RiotRateLimitWouldWaitError:
         pass
     except RiotConfigurationError as exc:
@@ -295,7 +317,18 @@ async def fetch_profile(
             "match_ids": match_ids,
         }
     )
-    job = await store.create_job(job_type=JobType.PROFILE_FETCH, params=queued_params)
+    job, created = await store.create_or_get_active_profile_job(params=queued_params)
+    if not created:
+        active_params = cast(ProfileFetchParams, job.params)
+        return ProfileFetchResponse(
+            job_id=job.job_id,
+            job_type=job.job_type,
+            status=job.status,
+            identity_status="already_running",
+            account=active_params.account,
+            summoner=active_params.summoner,
+            match_ids=active_params.match_ids,
+        )
     priority = PROFILE_MATCH_DETAILS_PRIORITY if match_ids is not None else PROFILE_FETCH_PRIORITY
     await job_queue.enqueue(job.job_id, priority=priority)
 
@@ -514,12 +547,19 @@ async def _get_profile_view(
         if cache_match_ids is not None
         else _job_match_ids(active_job) or _job_match_ids(latest_success_job)
     )
-    match_source_job = (
-        active_job
-        if active_job is not None and isinstance(active_job.result, ProfileFetchResult)
-        else None
+    durable_match_ids: list[str] = []
+    durable_matches: dict[str, dict[str, Any]] = {}
+    match_store = _optional_match_store(request)
+    if match_store is not None and puuid is not None:
+        durable_match_ids = await match_store.get_player_match_ids(puuid)
+        durable_matches = await match_store.get_matches(durable_match_ids)
+    if active_job is None and latest_success_job is not None:
+        match_ids = durable_match_ids
+    all_matches = _compact_match_summaries(
+        match_ids=durable_match_ids,
+        matches=durable_matches,
+        puuid=puuid,
     )
-    all_matches = _compact_match_summaries(match_source_job or latest_success_job, puuid=puuid)
     matches, matches_pagination = _paginate_profile_matches(
         all_matches,
         start=match_start,
@@ -911,12 +951,15 @@ def _job_match_ids(job: JobRecord | None) -> list[str] | None:
     return job.params.match_ids
 
 
-def _compact_match_summaries(job: JobRecord | None, *, puuid: str | None) -> list[dict[str, Any]]:
-    if job is None or not isinstance(job.result, ProfileFetchResult):
-        return []
+def _compact_match_summaries(
+    *,
+    match_ids: list[str],
+    matches: dict[str, dict[str, Any]],
+    puuid: str | None,
+) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
-    for match_id in job.result.match_ids:
-        match = job.result.matches.get(match_id)
+    for match_id in match_ids:
+        match = matches.get(match_id)
         if not isinstance(match, dict):
             continue
         info = match.get("info")
@@ -980,6 +1023,17 @@ def _participant_for_match(info: dict[str, Any], *, puuid: str | None) -> dict[s
 
 def _optional_riot_cache_store(request: Request) -> RiotCacheStore | None:
     return cast(RiotCacheStore | None, getattr(request.app.state, "riot_cache_store", None))
+
+
+def _optional_match_store(request: Request) -> MatchStore | None:
+    return cast(MatchStore | None, getattr(request.app.state, "match_store", None))
+
+
+def _optional_identity_store(request: Request) -> PlayerIdentityStore | None:
+    return cast(
+        PlayerIdentityStore | None,
+        getattr(request.app.state, "player_identity_store", None),
+    )
 
 
 def _safe_puuid(account: dict[str, Any] | None) -> str | None:

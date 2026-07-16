@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
 from league_api.api.query import add_accept_query_header, parse_query_json
+from league_api.core.auth import require_operator_token
 from league_api.core.config import Settings, get_settings
 from league_api.jobs.models import (
     JobDetails,
@@ -19,18 +20,28 @@ from league_api.jobs.models import (
     JobStatus,
     JobType,
     JobWait,
+    LadderFetchMode,
     LadderIngestionParams,
     LadderIngestionResult,
     LadderJobDetails,
+    LadderPlayersJobDetails,
+    LadderPlayersParams,
+    LadderPlayersResult,
     LadderType,
     ProfileFetchParams,
     ProfileFetchResult,
     ProfileJobDetails,
+    RankedDivision,
+    RankedTier,
 )
-from league_api.jobs.queue import LADDER_INGESTION_PRIORITY, InMemoryJobQueue
+from league_api.jobs.queue import (
+    LADDER_INGESTION_PRIORITY,
+    LADDER_PLAYERS_PRIORITY,
+    InMemoryJobQueue,
+)
 from league_api.jobs.store import JobListCursor, JobStore
 from league_api.riot.queues import LeagueQueue, league_queue_label
-from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
+from league_api.riot.routing import RiotAccountRegionalRoute, RiotPlatformRoute, RiotRegionalRoute
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -45,7 +56,7 @@ class JobStatusResponse(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     details: JobDetails
-    progress: JobProgress
+    progress: dict[str, Any]
     estimate: JobEstimate
     current_wait: JobWait | None
     events: list[JobEvent]
@@ -106,6 +117,7 @@ def get_job_queue(request: Request) -> InMemoryJobQueue:
     response_model=JobStatusResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Start a ladder ingestion job",
+    dependencies=[Depends(require_operator_token)],
 )
 async def start_ladder_ingestion_job(
     store: Annotated[JobStore, Depends(get_job_store)],
@@ -137,6 +149,46 @@ async def start_ladder_ingestion_job(
     )
     job = await store.create_job(job_type=JobType.LADDER_INGESTION, params=params)
     await job_queue.enqueue(job.job_id, priority=LADDER_INGESTION_PRIORITY)
+    return _status_response(job)
+
+
+@router.post(
+    "/ingestion/ladder-players",
+    response_model=JobStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Fetch and persist ranked ladder players",
+    dependencies=[Depends(require_operator_token)],
+)
+async def start_ladder_players_job(
+    store: Annotated[JobStore, Depends(get_job_store)],
+    job_queue: Annotated[InMemoryJobQueue, Depends(get_job_queue)],
+    platform_route: RiotPlatformRoute = RiotPlatformRoute.OC1,
+    account_regional_route: RiotAccountRegionalRoute = RiotAccountRegionalRoute.ASIA,
+    regional_route: RiotRegionalRoute = RiotRegionalRoute.SEA,
+    queue: LeagueQueue = LeagueQueue.RANKED_SOLO_5X5,
+    tier: RankedTier = RankedTier.CHALLENGER,
+    division: RankedDivision | None = None,
+    page: Annotated[int | None, Query(ge=1)] = None,
+    mode: LadderFetchMode = LadderFetchMode.LADDER_ONLY,
+) -> JobStatusResponse:
+    try:
+        params = LadderPlayersParams(
+            platform_route=platform_route,
+            account_regional_route=account_regional_route,
+            regional_route=regional_route,
+            queue=queue,
+            tier=tier,
+            division=division,
+            page=page,
+            mode=mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    job = await store.create_job(job_type=JobType.LADDER_PLAYERS, params=params)
+    await job_queue.enqueue(job.job_id, priority=LADDER_PLAYERS_PRIORITY)
     return _status_response(job)
 
 
@@ -319,7 +371,7 @@ async def get_job_result(
                 "status": job.status,
                 "message": "Job is still queued or running.",
                 "details": _job_details(job).model_dump(mode="json"),
-                "progress": job.progress.model_dump(mode="json"),
+                "progress": _progress_payload(job),
                 "estimate": _estimate_job(job).model_dump(mode="json"),
                 "current_wait": (
                     job.current_wait.model_dump(mode="json")
@@ -349,7 +401,7 @@ def _status_response(job: JobRecord, *, include_events: bool = True) -> JobStatu
         started_at=job.started_at,
         finished_at=job.finished_at,
         details=_job_details(job),
-        progress=job.progress,
+        progress=_progress_payload(job),
         estimate=_estimate_job(job),
         current_wait=job.current_wait,
         events=job.events if include_events else [],
@@ -366,13 +418,15 @@ def _success_result(job: JobRecord) -> dict[str, Any]:
         "details": _job_details(job).model_dump(mode="json"),
         "summary": job.result.summary.model_dump(mode="json"),
         "estimate": _estimate_job(job).model_dump(mode="json"),
-        "match_ids": job.result.match_ids,
-        "matches": job.result.matches,
         "errors": [error.model_dump(mode="json") for error in job.result.errors],
     }
-    if isinstance(job.result, LadderIngestionResult):
+    if isinstance(job.result, (LadderIngestionResult, LadderPlayersResult, ProfileFetchResult)):
+        payload["match_ids"] = job.result.match_ids
+    if isinstance(job.result, (LadderIngestionResult, ProfileFetchResult)):
+        payload["matches"] = job.result.matches
+    if isinstance(job.result, (LadderIngestionResult, LadderPlayersResult)):
         payload["player_puuids"] = job.result.player_puuids
-    elif isinstance(job.result, ProfileFetchResult):
+    if isinstance(job.result, ProfileFetchResult):
         payload["account"] = job.result.account
         payload["summoner"] = job.result.summoner
     return payload
@@ -426,7 +480,7 @@ def _job_payload(
         "started_at": job.started_at,
         "finished_at": job.finished_at,
         "details": _job_details(job).model_dump(mode="json"),
-        "progress": job.progress.model_dump(mode="json"),
+        "progress": _progress_payload(job),
         "estimate": _estimate_job(job, now=now).model_dump(mode="json"),
         "current_wait": (
             job.current_wait.model_dump(mode="json") if job.current_wait is not None else None
@@ -450,7 +504,43 @@ def _job_payload(
     return payload
 
 
+def _progress_payload(job: JobRecord) -> dict[str, Any]:
+    payload = job.progress.model_dump(mode="json")
+    if job.job_type is not JobType.LADDER_PLAYERS:
+        for field in (
+            "identities_resolved",
+            "identities_reused",
+            "identities_unresolved",
+            "current_player_puuid",
+            "phase",
+            "current_match_id_start",
+            "match_id_pages_attempted",
+            "match_id_pages_failed",
+            "match_id_pages_retried",
+            "duplicate_match_references",
+            "match_details_reused",
+        ):
+            payload.pop(field, None)
+    return payload
+
+
 def _job_details(job: JobRecord) -> JobDetails:
+    if isinstance(job.params, LadderPlayersParams):
+        return LadderPlayersJobDetails(
+            source="league_v4_ranked_players",
+            platform_route=job.params.platform_route,
+            regional_route=job.params.regional_route,
+            queue=job.params.queue,
+            queue_label=_queue_label(job.params.queue),
+            tier=job.params.tier,
+            division=job.params.division,
+            page=job.params.page,
+            player_count=job.progress.players_discovered,
+            identities_resolved=job.progress.identities_resolved,
+            identities_reused=job.progress.identities_reused,
+            identities_unresolved=job.progress.identities_unresolved,
+            mode=job.params.mode,
+        )
     if isinstance(job.params, LadderIngestionParams):
         return LadderJobDetails(
             source=_job_source(job),
@@ -489,6 +579,8 @@ def _job_details(job: JobRecord) -> JobDetails:
 
 
 def _job_source(job: JobRecord) -> str:
+    if job.job_type is JobType.LADDER_PLAYERS:
+        return "league_v4_ranked_players"
     if job.job_type is JobType.LADDER_INGESTION:
         return "league_v4_apex_ladder"
     if job.job_type is JobType.PROFILE_FETCH:
@@ -603,6 +695,31 @@ def _job_stage(job: JobRecord) -> tuple[str, str]:
     if job.current_wait is not None:
         return job.current_wait.stage or "rate_limit_wait", job.current_wait.message
 
+    if isinstance(job.params, LadderPlayersParams):
+        progress = job.progress
+        if progress.players_discovered == 0:
+            return "ladder", f"Fetching {job.params.tier.value} ladder players."
+        if progress.players_processed < progress.players_discovered:
+            return (
+                "account",
+                f"Resolving Riot ID {progress.players_processed + 1} "
+                f"of {progress.players_discovered}.",
+            )
+        if progress.phase == "match_id_discovery":
+            return (
+                "match_ids",
+                f"Discovering all match-ID pages at start={progress.current_match_id_start or 0}.",
+            )
+        if progress.phase == "match_id_persistence":
+            return "match_id_persistence", "Deduplicating and persisting match references."
+        if progress.phase == "match_details":
+            return (
+                "match_detail",
+                f"Processing match detail {progress.matches_fetched + 1} "
+                f"of {progress.unique_match_ids}.",
+            )
+        return "finalizing", "Persisting ranked ladder players."
+
     if isinstance(job.params, ProfileFetchParams):
         progress = job.progress
         if progress.players_discovered == 0:
@@ -652,6 +769,18 @@ def _job_stage(job: JobRecord) -> tuple[str, str]:
 
 def _request_counts(job: JobRecord) -> tuple[int, int | None]:
     progress = job.progress
+    if isinstance(job.params, LadderPlayersParams):
+        ladder_completed = int(progress.players_discovered > 0 or job.status is JobStatus.SUCCEEDED)
+        completed = (
+            ladder_completed
+            + progress.players_processed
+            + progress.match_id_pages_fetched
+            + progress.matches_fetched
+        )
+        total = 1 + progress.players_discovered
+        if job.params.mode is LadderFetchMode.LADDER_AND_MATCHES:
+            total += progress.match_id_pages_attempted + progress.unique_match_ids
+        return (max(completed, total) if job.status is JobStatus.SUCCEEDED else completed, total)
     if isinstance(job.params, ProfileFetchParams):
         account_completed = int(progress.players_discovered > 0 or job.params.account is not None)
         summoner_completed = int(progress.players_processed > 0 or job.params.summoner is not None)

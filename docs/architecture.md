@@ -37,9 +37,9 @@ through as-is.
 `POST /profiles/fetch` is a process-local profile workflow. It accepts a
 `gameName#tagLine` Riot ID, tries to resolve Account-V1 and Summoner-V4 without
 waiting on manual rate-limit capacity, then queues paged Match-V5 ID discovery
-and match detail fetching through the job system. Profile jobs have higher queue
-priority than automatic ladder ingestion. Repeated requests for the same Riot
-ID, route, and match count reuse an existing queued or running profile job.
+and match detail fetching through the job system. Profile jobs run independently
+from automatic ladder ingestion. Repeated or concurrent requests for the same
+Riot ID, route, and match count reuse an existing queued or running profile job.
 
 `GET /profiles/fetch` and `QUERY /profiles/fetch` read the same cached profile
 view without starting work. `GET /profiles/by-riot-id/{gameName}/{tagLine}` and
@@ -93,9 +93,10 @@ ingestion.py
 
 `store.py` defines the job-store boundary and keeps the in-memory test
 implementation. `postgres_store.py` persists queued, running, succeeded, and
-failed job records, progress, events, errors, and results. The queue still uses
-one `asyncio.PriorityQueue` worker inside the FastAPI process, with Redis job
-locks preventing duplicate processing when multiple API processes are running.
+failed job records, progress, events, errors, and results. Separate manual and
+automatic `asyncio.PriorityQueue` workers run inside the FastAPI process, with
+Redis job locks preventing duplicate processing when multiple API processes are
+running. Startup restores queued and abandoned running work.
 `league_api.main` creates `app.state.job_store`, `app.state.job_queue`,
 `app.state.riot_cache_store`, and `app.state.riot_rate_limiter` during lifespan
 startup and stops the worker during shutdown.
@@ -116,6 +117,10 @@ first previously known match and fetch details only for matches absent from the
 durable store. Redis is used for shared job locks and Riot rate-limit coordination. The
 Docker Compose stack includes the API, PostgreSQL, Redis, an Alembic migration
 service, Adminer, and RedisInsight.
+
+Ranked ladder refreshes replace a target only after the complete player list is
+resolved, so readers continue seeing the previous complete snapshot while work
+is running.
 
 External workers, normalized analytics tables, pgBouncer, PostgREST or Hasura,
 and observability services are intentionally deferred until workload and query
