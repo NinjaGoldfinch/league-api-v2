@@ -40,6 +40,10 @@ cp .env.example .env
 RIOT_API_KEY=your-development-key
 ```
 
+Set `OPERATOR_API_TOKEN` for any reachable deployment. When configured,
+profile refreshes, ingestion starts, and manager mutations require either
+`Authorization: Bearer <token>` or `X-Operator-Token: <token>`.
+
 Riot calls use a process-local app rate limiter by default. The default budget
 matches the development-key app limit: `20` requests per `1` second and `100`
 requests per `120` seconds. Tune these values with
@@ -167,8 +171,8 @@ curl "http://localhost:8000/lol/summoner/v4/summoners/by-puuid/PLAYER_PUUID?plat
 
 Profile fetches accept a Riot ID search value, resolve Account-V1 and
 Summoner-V4 data, then queue paged Match-V5 ID discovery and match detail
-fetching behind the existing job status endpoints. Profile work takes priority
-over automatic ladder ingestion.
+fetching behind the existing job status endpoints. Profile work runs on an
+independent worker so automatic ladder ingestion cannot block it.
 
 ```bash
 curl -X POST "http://localhost:8000/profiles/fetch?riot_id=GAME_NAME%23TAG_LINE&account_regional_route=asia&platform_route=oc1&regional_route=sea"
@@ -179,8 +183,8 @@ Summoner-V4 calls can run without waiting for manual rate-limit capacity, the
 response includes `account` and `summoner`. Match IDs and match summaries are
 filled in by the queued job and are visible through the composed profile read
 while the job runs.
-Repeated profile fetch requests for the same Riot ID and route return the
-existing queued or running job instead of creating duplicate work.
+Repeated or concurrent profile fetch requests for the same Riot ID and route
+return the existing queued or running job instead of creating duplicate work.
 
 Cached profile reads support both the browser-friendly query-string form and an
 RFC 10008 `QUERY` form with a JSON body:
@@ -233,6 +237,9 @@ Start an in-memory ladder ingestion job:
 ```bash
 curl -X POST "http://localhost:8000/jobs/ingestion/ladder?platform_route=oc1&regional_route=sea&queue=RANKED_SOLO_5x5&ladder=challenger&match_count=20"
 ```
+
+If `OPERATOR_API_TOKEN` is configured, include it as a Bearer token or
+`X-Operator-Token` header on this and other mutation requests.
 
 Poll job status:
 

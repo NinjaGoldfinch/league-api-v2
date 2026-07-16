@@ -14,6 +14,11 @@ class Settings(BaseSettings):
         alias="EXPERIMENTAL_FRONTEND_ENABLED",
     )
     riot_api_key: str | None = Field(default=None, alias="RIOT_API_KEY")
+    operator_api_token: str | None = Field(default=None, alias="OPERATOR_API_TOKEN")
+    operator_mutation_requests: int = Field(default=30, ge=1, alias="OPERATOR_MUTATION_REQUESTS")
+    operator_mutation_window_seconds: float = Field(
+        default=60.0, gt=0, alias="OPERATOR_MUTATION_WINDOW_SECONDS"
+    )
     default_platform_route: str = Field(default="oc1", alias="DEFAULT_PLATFORM_ROUTE")
     default_regional_route: str = Field(default="sea", alias="DEFAULT_REGIONAL_ROUTE")
     riot_app_rate_limit_short_requests: int = Field(

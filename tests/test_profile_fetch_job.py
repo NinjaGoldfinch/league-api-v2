@@ -329,7 +329,14 @@ async def test_profile_refresh_stops_at_known_match_and_reuses_durable_history()
         "/lol/match/v5/matches/OC1_4",
     ]
     assert result.match_ids == ["OC1_5", "OC1_4", "OC1_3", "OC1_2", "OC1_1"]
-    assert sorted(result.matches) == ["OC1_1", "OC1_2", "OC1_3", "OC1_4", "OC1_5"]
+    assert sorted(result.matches) == ["OC1_4", "OC1_5"]
+    assert sorted(await match_store.get_matches(result.match_ids)) == [
+        "OC1_1",
+        "OC1_2",
+        "OC1_3",
+        "OC1_4",
+        "OC1_5",
+    ]
     assert result.summary.match_id_pages_fetched == 1
     assert result.summary.unique_match_ids == 2
     assert result.summary.matches_fetched == 2

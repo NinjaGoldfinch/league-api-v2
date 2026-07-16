@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any, cast
 from uuid import uuid4
 
@@ -14,6 +15,8 @@ from league_api.jobs.models import (
     JobWait,
     LadderIngestionParams,
     LadderIngestionResult,
+    LadderPlayersParams,
+    LadderPlayersResult,
     ProfileFetchParams,
     ProfileFetchResult,
 )
@@ -66,6 +69,64 @@ class PostgresJobStore:
             msg = f"Created job was not found: {job_id}"
             raise RuntimeError(msg)
         return job
+
+    async def create_or_get_active_profile_job(
+        self, *, params: ProfileFetchParams
+    ) -> tuple[JobRecord, bool]:
+        from sqlalchemy import text
+        from sqlalchemy.dialects.postgresql import JSONB
+        from sqlalchemy.sql import bindparam
+
+        job_id = str(uuid4())
+        active_key = _profile_active_key(params)
+        query = text(
+            """
+            insert into jobs (
+                job_id, job_type, status, created_at, params, progress, active_key
+            ) values (
+                :job_id, :job_type, :status, :created_at, :params, :progress, :active_key
+            )
+            on conflict (active_key)
+            where active_key is not null and status in ('queued', 'running')
+            do nothing
+            returning job_id
+            """
+        ).bindparams(
+            bindparam("params", type_=JSONB),
+            bindparam("progress", type_=JSONB),
+        )
+        async with self._engine.begin() as conn:
+            inserted_id = await conn.scalar(
+                query,
+                {
+                    "job_id": job_id,
+                    "job_type": JobType.PROFILE_FETCH.value,
+                    "status": JobStatus.QUEUED.value,
+                    "created_at": datetime.now(UTC),
+                    "params": params.model_dump(mode="json"),
+                    "progress": JobProgress().model_dump(mode="json"),
+                    "active_key": active_key,
+                },
+            )
+            created = inserted_id is not None
+            resolved_id = (
+                cast(str, inserted_id)
+                if created
+                else cast(
+                    str,
+                    await conn.scalar(
+                        text(
+                            """
+                        select job_id from jobs
+                        where active_key=:active_key
+                        order by created_at desc, job_id desc limit 1
+                        """
+                        ),
+                        {"active_key": active_key},
+                    ),
+                )
+            )
+        return await self._require_job(resolved_id), created
 
     async def get_job(self, job_id: str) -> JobRecord | None:
         from sqlalchemy import text
@@ -426,6 +487,8 @@ def _params_for_type(job_type: JobType, payload: dict[str, Any]) -> JobParams:
         return LadderIngestionParams.model_validate(payload)
     if job_type is JobType.PROFILE_FETCH:
         return ProfileFetchParams.model_validate(payload)
+    if job_type is JobType.LADDER_PLAYERS:
+        return LadderPlayersParams.model_validate(payload)
     msg = f"Unsupported job type: {job_type}"
     raise ValueError(msg)
 
@@ -435,6 +498,8 @@ def _result_for_type(job_type: JobType, payload: dict[str, Any]) -> JobResult:
         return LadderIngestionResult.model_validate(payload)
     if job_type is JobType.PROFILE_FETCH:
         return ProfileFetchResult.model_validate(payload)
+    if job_type is JobType.LADDER_PLAYERS:
+        return LadderPlayersResult.model_validate(payload)
     msg = f"Unsupported job type: {job_type}"
     raise ValueError(msg)
 
@@ -449,3 +514,17 @@ def _optional_aware(value: Any) -> datetime | None:
     if value is None:
         return None
     return _aware(cast(datetime, value))
+
+
+def _profile_active_key(params: ProfileFetchParams) -> str:
+    raw = "|".join(
+        (
+            params.game_name.strip().casefold(),
+            params.tag_line.strip().casefold(),
+            params.account_regional_route.value,
+            params.platform_route.value,
+            params.regional_route.value,
+            str(params.match_count),
+        )
+    )
+    return sha256(raw.encode()).hexdigest()

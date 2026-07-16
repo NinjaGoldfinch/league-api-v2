@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from pydantic import BaseModel, ConfigDict, Field
 
 from league_api.api.routes.riot import RiotClientDependency
+from league_api.core.auth import require_operator_token
 from league_api.matches.store import MatchStore, StoredMatch
 from league_api.riot.cache import RiotCacheEntry, RiotCacheStore, build_riot_cache_key
 from league_api.riot.client import RiotClient, get_last_riot_cache_status
@@ -145,7 +146,11 @@ async def get_match_detail(
     return _match_response(record, payload=True, cache_entry=cache_entry)
 
 
-@router.post("/matches/fetch", response_model=MatchFetchResponse)
+@router.post(
+    "/matches/fetch",
+    response_model=MatchFetchResponse,
+    dependencies=[Depends(require_operator_token)],
+)
 async def fetch_matches(
     body: MatchFetchRequest,
     match_store: Annotated[MatchStore, Depends(get_match_store)],
@@ -207,7 +212,11 @@ async def fetch_matches(
     )
 
 
-@router.delete("/cache/matches/{matchId}", response_model=DeleteResponse)
+@router.delete(
+    "/cache/matches/{matchId}",
+    response_model=DeleteResponse,
+    dependencies=[Depends(require_operator_token)],
+)
 async def delete_match_cache(
     cache_store: Annotated[RiotCacheStore | None, Depends(get_cache_store)],
     match_id: Annotated[str, Path(alias="matchId", min_length=1)],
@@ -217,7 +226,11 @@ async def delete_match_cache(
     return DeleteResponse(match_id=match_id, cache_deleted=deleted)
 
 
-@router.delete("/players/{puuid}/matches/{matchId}", response_model=DeleteResponse)
+@router.delete(
+    "/players/{puuid}/matches/{matchId}",
+    response_model=DeleteResponse,
+    dependencies=[Depends(require_operator_token)],
+)
 async def unlink_player_match(
     match_store: Annotated[MatchStore, Depends(get_match_store)],
     puuid: Annotated[str, Path(min_length=1)],
@@ -227,7 +240,11 @@ async def unlink_player_match(
     return DeleteResponse(match_id=match_id, player_link_deleted=deleted)
 
 
-@router.delete("/matches/{matchId}", response_model=DeleteResponse)
+@router.delete(
+    "/matches/{matchId}",
+    response_model=DeleteResponse,
+    dependencies=[Depends(require_operator_token)],
+)
 async def delete_match(
     match_store: Annotated[MatchStore, Depends(get_match_store)],
     cache_store: Annotated[RiotCacheStore | None, Depends(get_cache_store)],
@@ -248,7 +265,11 @@ async def delete_match(
     )
 
 
-@router.post("/cache/prune-expired", response_model=PruneResponse)
+@router.post(
+    "/cache/prune-expired",
+    response_model=PruneResponse,
+    dependencies=[Depends(require_operator_token)],
+)
 async def prune_expired_cache(
     cache_store: Annotated[RiotCacheStore | None, Depends(get_cache_store)],
 ) -> PruneResponse:

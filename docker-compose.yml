@@ -42,6 +42,9 @@ services:
     build: .
     environment:
       RIOT_API_KEY: ${RIOT_API_KEY:-}
+      OPERATOR_API_TOKEN: ${OPERATOR_API_TOKEN:-}
+      OPERATOR_MUTATION_REQUESTS: ${OPERATOR_MUTATION_REQUESTS:-30}
+      OPERATOR_MUTATION_WINDOW_SECONDS: ${OPERATOR_MUTATION_WINDOW_SECONDS:-60}
       EXPERIMENTAL_FRONTEND_ENABLED: ${EXPERIMENTAL_FRONTEND_ENABLED:-false}
       DATABASE_URL: postgresql+asyncpg://league_api:league_api@postgres:5432/league_api
       REDIS_URL: redis://redis:6379/0

@@ -85,6 +85,30 @@ def test_start_ladder_ingestion_job_returns_job_id_with_defaults() -> None:
     assert stored_job.params == LadderIngestionParams()
 
 
+def test_start_ladder_ingestion_job_requires_configured_operator_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", "secret-token")
+    get_settings.cache_clear()
+    store = InMemoryJobStore()
+    fake_queue = FakeJobQueue()
+    app = create_app()
+    app.dependency_overrides[get_job_store] = lambda: store
+    app.dependency_overrides[get_job_queue] = lambda: cast(InMemoryJobQueue, fake_queue)
+
+    try:
+        with TestClient(app) as test_client:
+            unauthorized = test_client.post("/jobs/ingestion/ladder")
+            authorized = test_client.post(
+                "/jobs/ingestion/ladder", headers={"X-Operator-Token": "secret-token"}
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 202
+
+
 def test_get_job_returns_status_and_result_returns_202_while_queued() -> None:
     store = InMemoryJobStore()
     fake_queue = FakeJobQueue()

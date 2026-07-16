@@ -9,6 +9,7 @@ from league_api.jobs.models import (
     JobWait,
     LadderIngestionParams,
     LadderIngestionResult,
+    ProfileFetchParams,
 )
 from league_api.jobs.store import InMemoryJobStore
 
@@ -26,6 +27,19 @@ async def test_create_job_returns_queued_status() -> None:
     assert job.progress == JobProgress()
     assert job.started_at is None
     assert job.finished_at is None
+
+
+@pytest.mark.asyncio
+async def test_active_profile_job_creation_is_idempotent() -> None:
+    store = InMemoryJobStore()
+    params = ProfileFetchParams(game_name="GameName", tag_line="OCE")
+
+    first, first_created = await store.create_or_get_active_profile_job(params=params)
+    second, second_created = await store.create_or_get_active_profile_job(params=params)
+
+    assert first_created is True
+    assert second_created is False
+    assert second.job_id == first.job_id
 
 
 @pytest.mark.asyncio

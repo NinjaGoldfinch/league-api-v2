@@ -11,6 +11,7 @@ from league_api.jobs.models import (
 )
 from league_api.jobs.store import JobStore
 from league_api.matches.store import InMemoryMatchStore, MatchStore
+from league_api.players.store import PlayerIdentityStore, hydrate_identities
 from league_api.riot.client import RiotClient, RiotRequestEventHandler
 from league_api.riot.rate_limiter import RiotRateLimitAudience
 from league_api.riot.routing import RiotAccountRegionalRoute, RiotPlatformRoute, RiotRegionalRoute
@@ -84,6 +85,7 @@ async def run_profile_fetch(
     *,
     riot_client_factory: ProfileRiotClientFactory = _default_profile_riot_client_factory,
     match_store: MatchStore | None = None,
+    identity_store: PlayerIdentityStore | None = None,
 ) -> ProfileFetchResult:
     resolved_match_store = match_store or InMemoryMatchStore()
     progress = JobProgress()
@@ -104,7 +106,6 @@ async def run_profile_fetch(
         puuid = _puuid_from_account(account)
         history_match_ids = await resolved_match_store.get_player_match_ids(puuid)
         known_match_ids = set(history_match_ids)
-        matches.update(await resolved_match_store.get_matches(history_match_ids))
         summoner = params.summoner
         if summoner is None:
             summoner = await _fetch_summoner(riot_client, params, puuid)
@@ -126,6 +127,7 @@ async def run_profile_fetch(
                 matches=matches,
                 errors=errors,
                 match_store=resolved_match_store,
+                identity_store=identity_store,
                 puuid=puuid,
                 known_match_ids=known_match_ids,
                 history_match_ids=history_match_ids,
@@ -161,6 +163,7 @@ async def run_profile_fetch(
                     matches=matches,
                     errors=errors,
                     match_store=resolved_match_store,
+                    identity_store=identity_store,
                     puuid=puuid,
                     known_match_ids=known_match_ids,
                     history_match_ids=history_match_ids,
@@ -257,6 +260,7 @@ async def _record_and_process_match_id_page(
     matches: dict[str, dict[str, Any]],
     errors: list[JobError],
     match_store: MatchStore,
+    identity_store: PlayerIdentityStore | None,
     puuid: str,
     known_match_ids: set[str],
     history_match_ids: list[str],
@@ -305,6 +309,8 @@ async def _record_and_process_match_id_page(
                 regional_route=str(params.regional_route),
                 payload=match_payload,
             )
+        if identity_store is not None:
+            await hydrate_identities(identity_store, match_payload)
         await match_store.link_player_matches(puuid, [match_id])
         matches[match_id] = match_payload
         progress.matches_fetched += 1

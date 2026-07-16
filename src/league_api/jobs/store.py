@@ -39,6 +39,10 @@ class JobStore(Protocol):
         params: JobParams,
     ) -> JobRecord: ...
 
+    async def create_or_get_active_profile_job(
+        self, *, params: ProfileFetchParams
+    ) -> tuple[JobRecord, bool]: ...
+
     async def get_job(self, job_id: str) -> JobRecord | None: ...
 
     async def list_jobs(self, *, statuses: set[JobStatus] | None = None) -> list[JobRecord]: ...
@@ -110,6 +114,28 @@ class InMemoryJobStore:
         async with self._lock:
             self._jobs[job.job_id] = job
         return self._copy(job)
+
+    async def create_or_get_active_profile_job(
+        self, *, params: ProfileFetchParams
+    ) -> tuple[JobRecord, bool]:
+        async with self._lock:
+            for existing in self._jobs.values():
+                if (
+                    existing.status in {JobStatus.QUEUED, JobStatus.RUNNING}
+                    and isinstance(existing.params, ProfileFetchParams)
+                    and _profile_work_key(existing.params) == _profile_work_key(params)
+                ):
+                    return self._copy(existing), False
+            now = datetime.now(UTC)
+            job = JobRecord(
+                job_id=str(uuid4()),
+                job_type=JobType.PROFILE_FETCH,
+                status=JobStatus.QUEUED,
+                created_at=now,
+                params=params,
+            )
+            self._jobs[job.job_id] = job
+            return self._copy(job), True
 
     async def get_job(self, job_id: str) -> JobRecord | None:
         async with self._lock:
@@ -283,3 +309,16 @@ def _normalize_riot_id(riot_id: str) -> str:
     if not separator:
         return riot_id.strip().casefold()
     return f"{game_name.strip().casefold()}#{tag_line.strip().casefold()}"
+
+
+def _profile_work_key(params: ProfileFetchParams) -> str:
+    return "|".join(
+        (
+            params.game_name.strip().casefold(),
+            params.tag_line.strip().casefold(),
+            params.account_regional_route.value,
+            params.platform_route.value,
+            params.regional_route.value,
+            str(params.match_count),
+        )
+    )

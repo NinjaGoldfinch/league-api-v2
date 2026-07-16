@@ -12,6 +12,7 @@ from league_api.jobs.models import (
 )
 from league_api.jobs.store import JobStore
 from league_api.matches.store import InMemoryMatchStore, MatchStore
+from league_api.players.store import PlayerIdentityStore, hydrate_identities
 from league_api.riot.client import RiotClient, RiotRequestEvent, RiotRequestEventHandler
 from league_api.riot.rate_limiter import RiotRateLimitAudience
 from league_api.riot.routing import RiotPlatformRoute, RiotRegionalRoute
@@ -72,6 +73,7 @@ async def run_ladder_ingestion(
     *,
     riot_client_factory: RiotClientFactory = _default_riot_client_factory,
     match_store: MatchStore | None = None,
+    identity_store: PlayerIdentityStore | None = None,
 ) -> LadderIngestionResult:
     resolved_match_store = match_store or InMemoryMatchStore()
     progress = JobProgress()
@@ -138,6 +140,8 @@ async def run_ladder_ingestion(
                     regional_route=str(params.regional_route),
                     payload=match_payload,
                 )
+            if identity_store is not None:
+                await hydrate_identities(identity_store, match_payload)
             matches[match_id] = match_payload
             progress.matches_fetched += 1
             await store.update_progress(job_id, progress)

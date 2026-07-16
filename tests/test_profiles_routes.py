@@ -15,7 +15,6 @@ from league_api.jobs.models import (
 )
 from league_api.jobs.queue import (
     PROFILE_FETCH_PRIORITY,
-    PROFILE_MATCH_DETAILS_PRIORITY,
     InMemoryJobQueue,
 )
 from league_api.jobs.store import InMemoryJobStore
@@ -253,7 +252,7 @@ def test_fetch_profile_reuses_active_matching_profile_job() -> None:
     assert body["account"] == {"puuid": "puuid-1"}
     assert body["summoner"] == {"puuid": "puuid-1", "summonerLevel": 100}
     assert body["match_ids"] == ["OC1_1"]
-    assert fake_queue.enqueued == [(active_job.job_id, PROFILE_MATCH_DETAILS_PRIORITY)]
+    assert fake_queue.enqueued == []
     assert fake_riot_client.calls == []
 
 

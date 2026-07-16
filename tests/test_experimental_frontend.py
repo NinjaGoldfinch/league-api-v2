@@ -89,6 +89,28 @@ def test_profile_slug_renders_profile_shell_when_enabled(frontend_client: TestCl
     assert "window.setInterval(tick, 1800)" not in response.text
 
 
+def test_ladder_browser_is_explicit_and_cache_only(frontend_client: TestClient) -> None:
+    response = frontend_client.get("/ladders")
+
+    assert response.status_code == 200
+    assert '"page":"ladders"' in response.text
+    assert 'id="ladder-fetch"' in response.text
+    assert "/jobs/ingestion/ladder-players" in response.text
+    assert "/ladders/players" in response.text
+    assert "/ladders/matches" in response.text
+    assert 'value="ladder_and_matches"' in response.text
+    assert "Icons are cache-only" in response.text
+    assert "/lol/summoner/v4/" not in response.text
+    assert "void monitorLadderJob(job.job_id)" in response.text
+    assert "Ladder fetch queued in the background" in response.text
+    assert "Stored ladder data remains available while this runs" in response.text
+    assert 'id="ladder-previous"' in response.text
+    assert 'id="ladder-next"' in response.text
+    assert 'id="ladder-page-size"' in response.text
+    assert 'params.set("offset", String(ladderPlayerOffset))' in response.text
+    assert "refreshTick % 3 === 0" in response.text
+
+
 @pytest.mark.parametrize(
     "path",
     [
