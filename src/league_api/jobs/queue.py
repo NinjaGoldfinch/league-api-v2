@@ -42,7 +42,7 @@ QueuedJobItem = tuple[int, int, str | None]
 
 
 class InMemoryJobQueue:
-    """Single-worker asyncio queue for process-local jobs."""
+    """Two-worker asyncio queue for process-local manual and automatic jobs."""
 
     def __init__(
         self,
